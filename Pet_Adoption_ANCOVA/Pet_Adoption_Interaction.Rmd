@@ -1,0 +1,459 @@
+---
+title: "Pet Adoption Interaction Full Model"
+output: html_notebook
+---
+```{r}
+#Clear global environment
+ls()
+remove(list = ls())
+gc()
+```
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(multcomp)
+```
+```{r}
+pets <- read.csv('./Dataset/cleaned_pets_data.csv')
+pets <- pets[c('Time_Spent', 'Age', 'Group')] 
+```
+```{r}
+#70/30 split
+train <- pets[1:1145,]
+test <- pets[1145:1636,]
+```
+```{r}
+#Set as factor
+train$Group <- factor(train$Group,levels=c("Hounding","Toy","Working", "Terrier", "Herding","Sporting")) 
+contrasts(train$Group) <- contr.sum(6) #Creates the effect codings
+contrasts(train$Group)
+
+attach(train)
+```
+```{r}
+#Log the response and age variable
+train$Time_Spent <- log(train$Time_Spent, 10)
+train$Age <- log(train$Age, 10)
+train[mapply(is.infinite, train)] <- 0
+colnames(train)[c(1,2)] <- c('log_Time_Spent', 'log_Age')
+attach(train)
+```
+```{r}
+simple <- lm(log_Time_Spent ~ log_Age, data=train)
+summary(simple)
+```
+
+```{r}
+#Interaction term
+#Do add weights
+iaov <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=train)
+coef(iaov)
+```
+```{r}
+#F-test suggest interaction term is useful
+Anova(iaov, type=3)
+```
+```{r}
+ifit <- lm(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=train)
+summary(ifit)
+```
+```{r}
+plot(ifit)
+```
+```{r}
+plot(cooks.distance(ifit))
+```
+
+```{r}
+#Levene's Test
+sresa <- rstandard(ifit)
+absres <- abs(sresa)
+anova(lm(absres ~ Group, data=train))
+```
+```{r}
+check <- cbind(train, sresa)
+colnames(check)[4] <- c('std_residual')
+ggplot(data=check, aes(x=Group, y=sresa)) + geom_boxplot() + ggtitle('Standardized Residuals vs Breed')
+```
+```{r}
+#WLS With Interaction
+groupsd <- sapply(split(sresa,train$Group),sd)
+iwt <- 1/(groupsd[as.numeric(train$Group)]^2)
+aov_wls4 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt, data=train)
+coef(aov_wls4)
+```
+```{r}
+ifit2 <- lm(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt, data=train)
+summary(ifit2)
+```
+```{r}
+#Levene's Test
+sresa <- rstandard(ifit2)
+absres <- abs(sresa)
+anova(lm(absres ~ Group, data=train))
+```
+```{r}
+check <- cbind(train, sresa)
+colnames(check)[4] <- c('std_residual')
+ggplot(data=check, aes(x=Group, y=sresa)) + geom_boxplot() + ggtitle('Standardized Residuals vs Breed')
+```
+
+```{r}
+plot(ifit2)
+```
+```{r}
+#There are clear outliers
+std_residual <- data.frame(abs(rstandard(ifit2)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.ifit2., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(train[c(rownames(head(std_residual, 14))),])
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(11+1)/1145 which is hi > 0.026 right now
+hatvalues <- data.frame(hatvalues(ifit2))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.ifit2., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+print.data.frame(train[c(rownames(head(hatvalues, 50))),])
+```
+```{r}
+plot(cooks.distance(ifit2))
+```
+```{r}
+cooksd <- data.frame(cooks.distance(ifit2))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.ifit2., decreasing=TRUE),][2]
+print.data.frame(cooksd)
+```
+```{r}
+print.data.frame(train[c(rownames(head(cooksd, 9))),])
+```
+```{r}
+train$row_id <- seq.int(nrow(train))
+itrain2 <- train[!train$row_id %in% c(as.numeric(rownames(head(std_residual, 14)))),]
+itrain2 <- itrain2[!itrain2$row_id %in% c(as.numeric(rownames(head(hatvalues, 50)))),]
+#itrain2 <- itrain2[!itrain2$row_id %in% c(as.numeric(rownames(head(cooksd, 9)))),]
+itrain2$row_id <- seq.int(nrow(itrain2)) #need to reindex
+```
+```{r}
+iaov2 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=itrain2)
+sresa = rstandard(iaov2)
+groupsd <- sapply(split(sresa,itrain2$Group),sd)
+iwt2 <- 1/(groupsd[as.numeric(itrain2$Group)]^2)
+iaov_wls2 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt2, data=itrain2)
+coef(iaov_wls2)
+```
+```{r}
+ifit3 <- lm(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt2, data=itrain2)
+summary(ifit3)
+```
+```{r}
+vif(ifit3)
+```
+
+```{r}
+plot(ifit3)
+```
+```{r}
+#There are clear outliers
+std_residual <- data.frame(abs(rstandard(ifit3)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.ifit3., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(itrain2[itrain2$row_id %in% c(as.numeric(rownames(head(std_residual, 7)))),])
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(11+1)/1081 which is hi > 0.028 right now
+hatvalues <- data.frame(hatvalues(ifit3))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.ifit3., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+print.data.frame(itrain2[itrain2$row_id %in% c(as.numeric(rownames(head(hatvalues, 34)))),])
+```
+```{r}
+plot(cooks.distance(ifit2))
+```
+```{r}
+cooksd <- data.frame(cooks.distance(ifit2))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.ifit2., decreasing=TRUE),][2]
+print.data.frame(cooksd)
+```
+```{r}
+itrain3 <- itrain2[!itrain2$row_id %in% c(as.numeric(rownames(head(std_residual, 7)))),]
+itrain3 <- itrain3[!itrain3$row_id %in% c(as.numeric(rownames(head(hatvalues, 34)))),]
+#itrain3 <- itrain2[!itrain2$row_id %in% c(as.numeric(rownames(head(cooksd, 9)))),]
+
+itrain3$row_id <- seq.int(nrow(itrain3)) #need to reindex
+```
+```{r}
+iaov3 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=itrain3)
+sresa = rstandard(iaov3)
+groupsd <- sapply(split(sresa,itrain3$Group),sd)
+iwt3 <- 1/(groupsd[as.numeric(itrain3$Group)]^2)
+iaov_wls3 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt3, data=itrain3)
+coef(iaov_wls3)
+```
+```{r}
+ifit4 <- lm(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt3, data=itrain3)
+summary(ifit4)
+```
+```{r}
+plot(ifit4)
+```
+```{r}
+#There are clear outliers
+std_residual <- data.frame(abs(rstandard(ifit4)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.ifit4., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(itrain3[itrain3$row_id %in% c(as.numeric(rownames(head(std_residual, 7)))),])
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(11+1)/1037 which is hi > 0.029 right now
+hatvalues <- data.frame(hatvalues(ifit4))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.ifit4., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+print.data.frame(itrain3[itrain3$row_id %in% c(as.numeric(rownames(head(hatvalues, 34)))),])
+```
+```{r}
+cooksd <- data.frame(cooks.distance(ifit4))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.ifit4., decreasing=TRUE),][2]
+print.data.frame(cooksd)
+```
+```{r}
+plot(cooks.distance(ifit4))
+```
+
+```{r}
+itrain4 <- itrain3[!itrain3$row_id %in% c(as.numeric(rownames(head(std_residual, 7)))),]
+#itrain4 <- itrain4[!itrain4$row_id %in% c(as.numeric(rownames(head(hatvalues, 34)))),]
+itrain4 <- itrain4[!itrain4$row_id %in% c(as.numeric(rownames(head(cooksd, 1)))),]
+
+itrain4$row_id <- seq.int(nrow(itrain4)) #need to reindex
+```
+```{r}
+iaov4 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=itrain4)
+sresa = rstandard(iaov4)
+groupsd <- sapply(split(sresa,itrain4$Group),sd)
+iwt4 <- 1/(groupsd[as.numeric(itrain4$Group)]^2)
+iaov_wls4 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt4, data=itrain4)
+coef(iaov_wls4)
+```
+```{r}
+ifit5 <- lm(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt4, data=itrain4)
+summary(ifit5)
+```
+```{r}
+plot(ifit5)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(ifit5)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.ifit5., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(itrain4[itrain4$row_id %in% c(as.numeric(rownames(head(std_residual, 5)))),])
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(11+1)/997 which is hi > 0.03 right now
+hatvalues <- data.frame(hatvalues(ifit5))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.ifit5., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+print.data.frame(itrain4[itrain4$row_id %in% c(as.numeric(rownames(head(hatvalues, 68)))),])
+```
+```{r}
+cooksd <- data.frame(cooks.distance(ifit5))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.ifit5., decreasing=TRUE),][2]
+print.data.frame(cooksd)
+```
+```{r}
+plot(cooks.distance(ifit5))
+```
+```{r}
+itrain5 <- itrain4[!itrain4$row_id %in% c(as.numeric(rownames(head(std_residual, 5)))),]
+#itrain5 <- itrain5[!itrain5$row_id %in% c(as.numeric(rownames(head(hatvalues, 68)))),]
+itrain5 <- itrain5[!itrain5$row_id %in% c(as.numeric(rownames(head(cooksd, 2)))),]
+
+itrain5$row_id <- seq.int(nrow(itrain5)) #need to reindex
+itrain5 <- itrain5[complete.cases(itrain5),]
+```
+```{r}
+iaov6 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=itrain5)
+sresa = rstandard(iaov6)
+groupsd <- sapply(split(sresa,itrain5$Group),sd)
+iwt5 <- 1/(groupsd[as.numeric(itrain5$Group)]^2)
+iaov_wls5 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt5, data=itrain5)
+coef(iaov_wls5)
+```
+```{r}
+ifit6 <- lm(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt5, data=itrain5)
+summary(ifit6)
+```
+```{r}
+plot(ifit6)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(ifit6)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.ifit6., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(itrain5[itrain5$row_id %in% c(as.numeric(rownames(head(std_residual, 7)))),])
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(11+1)/955 which is hi > 0.032 right now
+hatvalues <- data.frame(hatvalues(ifit6))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.ifit6., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+print.data.frame(itrain5[itrain5$row_id %in% c(as.numeric(rownames(head(hatvalues, 5)))),])
+```
+```{r}
+cooksd <- data.frame(cooks.distance(ifit6))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.ifit6., decreasing=TRUE),][2]
+print.data.frame(cooksd)
+```
+```{r}
+plot(cooks.distance(ifit6))
+```
+```{r}
+itrain6 <- itrain5[!itrain5$row_id %in% c(as.numeric(rownames(head(std_residual, 8)))),]
+#itrain6 <- itrain6[!itrain6$row_id %in% c(as.numeric(rownames(head(hatvalues, 5)))),]
+#itrain6 <- itrain6[!itrain6$row_id %in% c(as.numeric(rownames(head(cooksd, 2)))),]
+
+itrain6$row_id <- seq.int(nrow(itrain6)) #need to reindex
+itrain6 <- itrain6[complete.cases(itrain6),]
+```
+```{r}
+iaov6 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=itrain6)
+sresa = rstandard(iaov6)
+groupsd <- sapply(split(sresa,itrain6$Group),sd)
+iwt6 <- 1/(groupsd[as.numeric(itrain6$Group)]^2)
+iaov_wls6 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt6, data=itrain6)
+coef(iaov_wls6)
+```
+```{r}
+ifit7 <- lm(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt6, data=itrain6)
+summary(ifit7)
+```
+```{r}
+plot(ifit7)
+```
+
+```{r}
+#Final
+plot(cooks.distance(ifit6))
+```
+```{r}
+sresa = rstandard(ifit6)
+
+#Levene's Test
+absres <- abs(sresa)
+anova(lm(absres ~ itrain5$Group, data=itrain5))
+```
+```{r}
+check <- cbind(itrain5, sresa)
+```
+```{r}
+ggplot(data=check, aes(x=Group, y=sresa)) + geom_boxplot() + ggtitle('Standardized Residuals vs Breed')
+ggplot(data=check, aes(x=log_Age, y=sresa)) + geom_point() + ggtitle('Standardized Residuals vs Breed')
+```
+```{r}
+coef(ifit7)
+```
+```{r}
+#F-test suggest interaction term is useful
+Anova(ifit6, type=3)
+```
+```{r}
+coef(ifit7)[1]+coef(ifit7)[2]*mean(itrain6$log_Age)+c(coef(ifit7)[3:6],-sum(coef(ifit7)[3:6]))
+```
+```{r}
+library(effects)
+```
+```{r}
+plot(effect(term="log_Age*Group", mod=ifit6, xlevels=100), multiline=TRUE)
+```
+```{r}
+#Set as factor
+test2 <- test
+test2$Group <- factor(test2$Group,levels=c("Hounding","Toy","Working", "Terrier", "Herding","Sporting")) 
+contrasts(test2$Group) <- contr.sum(6) #Creates the effect codings
+contrasts(test2$Group)
+```
+```{r}
+#Log the response and age variable
+test2$Time_Spent <- log(test2$Time_Spent, 10)
+test2$Age <- log(test2$Age, 10)
+test2[mapply(is.infinite, test2)] <- 0
+colnames(test2)[c(1,2)] <- c('log_Time_Spent', 'log_Age')
+```
+```{r}
+print.data.frame(test2)
+```
+```{r}
+iaov6 <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=test2)
+sresa = rstandard(iaov6)
+groupsd <- sapply(split(sresa,test2$Group),sd)
+iwt6 <- 1/(groupsd[as.numeric(test2$Group)]^2)
+```
+```{r}
+predictions <- cbind(predict(ifit6, test2, interval="predict", level=0.95, weights =iwt6 ), test2[1])
+print.data.frame(predictions)
+```
+```{r}
+predictions[1] <- 10**predictions[1]
+predictions[2] <- 10**predictions[2]
+predictions[3] <- 10**predictions[3]
+predictions[4] <- 10**predictions[4]
+print.data.frame(predictions)
+```
+```{r}
+write.csv(predictions, './Dataset/full_predictions.csv')
+```
+
+```{r}
+#A typical dog is 82.38 months old (6.865 years)
+#Hounding breed for a typical s
+lastf <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, weight=iwt6, data=itrain6)
+model.tables(lastf,type = 'means', cterms="Group")
+```
+

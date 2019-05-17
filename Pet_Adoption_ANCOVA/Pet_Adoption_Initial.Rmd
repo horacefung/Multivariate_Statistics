@@ -1,0 +1,123 @@
+---
+title: "Pet Adoption Data Prep"
+output: html_notebook
+---
+```{r}
+#Clear global environment
+ls()
+remove(list = ls())
+gc()
+```
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(fuzzyjoin)
+```
+```{r}
+#install.packages('fuzzyjoin', dependencies = TRUE)
+```
+
+```{r}
+intake <- read_csv("./Dataset/Austin_Animal_Center_Intakes.csv")
+outcomes <- read_csv("./Dataset/Austin_Animal_Center_Outcomes.csv")
+akc <- read_csv("./Dataset/AKC.csv")
+```
+```{r}
+intake <- intake[c('Animal ID','DateTime', 'Intake Type', 'Intake Condition', 'Animal Type', 'Breed', 'Color')]
+colnames(intake) <- c('Animal_ID','Intake_Date', 'Intake_Type', 'Intake_Condition', 'Animal_Type', 'Breed', 'Color')
+
+outcomes <- outcomes[c('Animal ID','DateTime', 'Outcome Type', 'Animal Type', 'Age upon Outcome')]
+colnames(outcomes) <- c('Animal_ID','Adoption_Date', 'Outcome_Type', 'Animal_Type', 'Age_upon_Outcome')
+outcomes <- outcomes[outcomes$Outcome_Type == 'Adoption',]
+
+intake <- intake[intake$Animal_Type == 'Dog',]
+outcomes <- outcomes[outcomes$Animal_Type == 'Dog',]
+```
+```{r}
+#same dog has been adopted and return multiple times
+#for this analysis I dont really care?
+data <- merge(outcomes, intake, by.x = 'Animal_ID', by.y = 'Animal_ID')
+data$Animal_Type.x <- NULL
+data$Animal_Type.y <- NULL
+```
+```{r}
+#Subtact dates
+data[[2]] <- as.Date(data[[2]],'%m/%d/%Y')
+data[[5]] <- as.Date(data[[5]], '%m/%d/%Y')
+data$Time_Spent <- as((data$Adoption_Date - data$Intake_Date), "numeric")
+data <- data[data$Time_Spent >= 0,]
+data <- data[data$Adoption_Date >= "2019-01-01",]
+```
+```{r}
+data
+```
+
+```{r}
+#Group by
+#Get the max time spent
+data <- data %>%
+  group_by(Animal_ID) %>%
+  summarize(Outcome_Type = max(Outcome_Type), 
+            Age_upon_Outcome = max(Age_upon_Outcome), 
+            Intake_Condition = max(Intake_Condition),
+            Breed = max(Breed), 
+            Colour = max(Color), 
+            Time_Spent = max(Time_Spent))
+```
+```{r}
+data
+```
+
+```{r}
+#Match only the first breed
+#Remove any MIX
+#Remove any blank spaces
+data$Breed <- gsub('Mix', '', sub("\\/.*", "", data$Breed))
+```
+```{r}
+#fuzzyjoin
+fuzzy_join <- stringdist_join(data, akc, 
+                              by = "Breed",
+                              mode = "left",
+                              ignore_case = FALSE, 
+                              method = "jw", 
+                              max_dist = 99, 
+                              distance_col = "dist") %>%
+  group_by(Breed.x) %>%
+  top_n(1, -dist)
+```
+```{r}
+age_parser <- function(age_list){
+  start_list <- c()
+  for (i in age_list){
+    if (grepl('year', i) == TRUE){
+      output = as.numeric(sub("\\D*(\\d+).*", "\\1", i)) * 12
+      } else {
+        output = as.numeric(sub("\\D*(\\d+).*", "\\1", i))
+        }
+  start_list <- c(start_list, output) }
+  return(start_list)
+  }
+```
+```{r}
+#Drop columns
+fuzzy_join[c('Outcome_Type', 'Intake_Condition','Breed.x', 'Breed.y', 'dist')] <- NULL
+fuzzy_join$Age_upon_Outcome <- age_parser(fuzzy_join$Age_upon_Outcome)
+colnames(fuzzy_join)[2] <- c('Age')
+```
+```{r}
+fuzzy_join
+```
+
+```{r}
+fuzzy_join <- fuzzy_join[fuzzy_join$Group != 'Non-sporting' & fuzzy_join$Group != 'Miscellaneous',]
+fuzzy_join <- fuzzy_join[sample(nrow(fuzzy_join)),]
+```
+```{r}
+write.csv(fuzzy_join,'./Dataset/cleaned_pets_data.csv')
+```
+
+

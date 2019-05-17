@@ -1,0 +1,267 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+ls()
+remove(list = ls())
+gc()
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+```
+
+```{r}
+health <- read.csv("./Dataset/500_Cities__Local_Data_for_Better_Health__2018_release.csv")
+```
+
+```{r}
+geocode <- read_excel("./Dataset/state-geocodes-v2011.xls")
+```
+
+```{r}
+#For each datapoint, there is the city average and then ~20 census tracks
+#we will just use the average by setting GeographicalLevel == 'City'
+behaviours <- health[health$Category == 'Unhealthy Behaviors' & 
+                    health$DataValueTypeID == 'AgeAdjPrv' &
+                    health$GeographicLevel == 'City',]
+
+behaviours <- behaviours[, c('StateDesc', 'CityName', 'UniqueID', 'Measure', 'Data_Value')]
+
+#Set cityname and uniqueid for each measure, fill in the measure with data values
+behaviours <- dcast(behaviours, StateDesc + CityName + UniqueID ~ Measure,value.var = 'Data_Value')
+```
+```{r}
+mean(behaviours$PopulationCount)
+```
+
+
+```{r}
+
+#For each datapoint, there is the city average and then ~20 census tracks
+#we will just use the average by setting GeographicalLevel == 'City'
+mentalhealth <- health[health$Category == 'Health Outcomes' & 
+                    health$DataValueTypeID == 'AgeAdjPrv' &
+                    health$GeographicLevel == 'City',] 
+
+mentalhealth <- mentalhealth[, c('StateDesc','CityName', 'UniqueID', 'Measure', 'Data_Value')]
+mentalhealth <- mentalhealth[mentalhealth$Measure == 'Mental health not good for >=14 days among adults aged >=18 Years',]
+
+#Set cityname and uniqueid for each measure, fill in the measure with data values
+mentalhealth <- dcast(mentalhealth, StateDesc + CityName + UniqueID ~ Measure,value.var = 'Data_Value')
+
+```
+```{r}
+#Check we have 500 unique cities 
+print(nrow(mentalhealth))
+print(nrow(behaviours))
+```
+```{r}
+#join both features and target by unique ID
+data <- merge(behaviours, mentalhealth, by = c('UniqueID', 'CityName', 'StateDesc'))
+colnames(data)[4:9] <- c('Drinking', 'Smoking', 'Lack_of_Exercise', 'Obesity', 'Lack_of_Sleep', 'Mental_Health')
+data <- merge(data, geocode, by.x = 'StateDesc', by.y= 'State', all = TRUE)
+head(data)
+```
+```{r}
+nrow(data)
+```
+
+```{r}
+m = "Scatterplot of Sleep Deprivation vs Mental Health in US Cities"
+x = "% of respondents with sleep deprivation"
+y = "% of respondents with poor mental health"
+```
+
+```{r}
+plot(data$Lack_of_Sleep, data$Mental_Health,
+     main = m,
+     xlab = x,
+     ylab = y)
+```
+```{r}
+regression <- lm(data$Mental_Health ~ data$Lack_of_Sleep)
+```
+```{r}
+summary(regression)
+```
+```{r}
+# Function for fitted line plot
+#
+regplot.confbands.fun <- function(x,y,confidencelevel=.95, main, xlab, ylab,
+                                  CImean=T,PI=T,CIregline=F,legend=F){
+      #### Modified from a function written by Sandra McBride, Duke University
+	#### For a simple linear regression line, this function
+	#### will plot the line, CI for mean response, prediction intervals, 
+	#### and (optionally) a simulataneous CI for the regression line.
+	xx <- x[order(x)]
+	yy <- y[order(x)]
+	lm1 <- lm(yy~xx)	
+	plot(xx,yy,ylim=c(min(yy),(max(yy)+.2*max(yy))), main=main, xlab=xlab, ylab=ylab)
+	abline(lm1$coefficients)
+	#### calculation of components of intervals ####
+	n <- length(yy)
+	sx2 <- (var(xx))
+	shat <- summary(lm1)$sigma
+	s2hat <- shat^2
+	SEmuhat <- shat*sqrt(1/n+ ((xx-mean(xx))^2)/((n-1)*sx2))
+	SEpred <- sqrt(s2hat+SEmuhat^2)
+	t.quantile <- qt(confidencelevel,lm1$df.residual)
+	####
+	if (CImean==T){
+		mean.up <- lm1$fitted+t.quantile*SEmuhat
+		mean.down <- lm1$fitted-t.quantile*SEmuhat
+		lines(xx,mean.up,lty=2)
+		lines(xx,mean.down,lty=2)
+	}
+	if (PI==T){
+		PI.up <- lm1$fitted+t.quantile*SEpred
+		PI.down <- lm1$fitted-t.quantile*SEpred
+		lines(xx,PI.up,lty=3)
+		lines(xx,PI.down,lty=3)
+	}
+	if (CIregline==T){
+		HW <- sqrt(2*qf(confidencelevel,n-lm1$df.residual,lm1$df.residual))*SEmuhat	
+		CIreg.up <- lm1$fitted+HW
+		CIreg.down <- lm1$fitted-HW
+		lines(xx,CIreg.up,lty=4)
+		lines(xx,CIreg.down,lty=4)
+	}	
+      if (legend==T){
+       	choices <- c(CImean,PI,CIregline)
+       	line.type <- c(2,3,4)
+             names.line <- c("Pointwise CI for mean resp.","Prediction Int.","Simultaneous conf. region for entire reg. line")
+       	legend(max(xx)-.2*max(xx),max(yy)+.2*max(yy),legend=names.line[choices],lty=line.type[choices])
+	}
+}
+```
+
+```{r}
+regplot.confbands.fun(data$Lack_of_Sleep, data$Mental_Health,
+                      main = 'Fitted Line Plot\n%Poor Mental Health = 16.012 + 1.544 %Sleep Deprivation',
+                      xlab = x,
+                      ylab = y)
+```
+
+```{r}
+plot(regression)
+```
+
+```{r}
+library(gatepoints)
+```
+```{r}
+residualvsfitted = data.frame(fitted(regression), residuals(regression))
+```
+```{r}
+hist(residualvsfitted$residuals.regression., main='Histogram of residuals',
+     xlab = 'Residuals')
+
+```
+```{r}
+### Lets subset and see the anomalies
+data[c(21),]
+```
+
+```{r}
+#Without Honolulu
+data2 <- data[-c(214),]
+regression2 <- lm(Mental_Health ~ Lack_of_Sleep, data = data2)
+```
+```{r}
+summary(regression2)
+```
+
+```{r}
+plot(regression2)
+```
+
+
+```{r}
+
+regplot.confbands.fun(data2$Lack_of_Sleep, data2$Mental_Health,
+                      main = 'Fitted Line Plot\n%Poor Mental Health = 0.5794 + 0.3397 %Sleep Deprivation',
+                      xlab = x,
+                      ylab = y)
+```
+
+
+
+```{r}
+new.data <- data.frame(Lack_of_Sleep=c(18))
+new.data
+```
+```{r}
+predict(regression2, newdata=new.data, se.fit=TRUE, interval="prediction", level=0.95)
+```
+```{r}
+predict(regression2, newdata=new.data, se.fit=TRUE, interval="confidence", level=0.95)
+```
+
+```{r}
+library(ggplot2)
+ggplot(data = data2, aes(x = Drinking, y = Mental_Health)) + 
+       geom_point() + facet_wrap(~Region) + xlab('% of respondents that binge drink') + ylab(y) + 
+       ggtitle('Scatterplot of Binge Drinking vs Mental Health in US Cities by Region')
+
+```
+```{r}
+#Drinking', 'Smoking', 'Lack_of_Exercise', 'Obesity', 'Lack_of_Sleep
+ggplot(data = insurance, aes(x = Insurance, y = Mental_Health)) + 
+       geom_point() + facet_wrap(~Region)
+```
+
+```{r}
+midwest <- data2[data2$Region == 'Midwest Region',]
+northeast <- data2[data2$Region == 'Northeast Region',]
+south <- data2[data2$Region == 'South Region',]
+west <- data2[data2$Region == 'West Region',]
+#midwest_fit <- lm(midwest$Lack_of_Sleep ~ midwest$Mental_Health)
+#summary(midwest_fit)
+```
+```{r}
+midwest_fit <- lm(Mental_Health ~ Lack_of_Sleep, data=midwest)
+northeast_fit <- lm(northeast$Mental_Health ~ northeast$Lack_of_Sleep)
+south_fit <- lm(south$Mental_Health ~ south$Lack_of_Sleep)
+west_fit <- lm(west$Mental_Health ~ west$Lack_of_Sleep)
+```
+
+```{r}
+summary(midwest_fit)
+```
+```{r}
+new.data <- data.frame(Lack_of_Sleep = 35.9)
+predict(midwest_fit, newdata=new.data, se.fit=TRUE, interval="confidence", level=0.95)
+predict(midwest_fit, newdata=new.data, se.fit=TRUE, interval="prediction", level=0.95)
+```
+
+```{r}
+plot(midwest_fit)
+```
+
+```{r}
+summary(northeast_fit)
+```
+```{r}
+summary(south_fit)
+```
+```{r}
+summary(west_fit)
+```
+```{r}
+colMeans(midwest[4:8])
+colMeans(northeast[4:8])
+colMeans(south[4:8])
+```
+

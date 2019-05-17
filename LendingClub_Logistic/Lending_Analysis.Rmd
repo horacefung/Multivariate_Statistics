@@ -1,0 +1,281 @@
+---
+title: "Lending_Analysis"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(bestglm)
+library(leaps)
+library(rms)
+library(ResourceSelection)
+library(boot)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+```{r}
+#Clear global environment
+ls()
+remove(list = ls())
+gc()
+```
+```{r}
+train <- read_csv('./Dataset/train.csv')
+test <- read_csv('./Dataset/test.csv')
+```
+```{r}
+head(train)
+```
+
+```{r}
+#Histogram of continuous variables
+hist(train$dti)
+hist(train$open_acc)
+hist(train$income)
+hist(train$loan_amnt)
+```
+
+```{r}
+#Initial plots
+ggplot(train, aes(x=as.factor(default), y=log(open_acc))) + geom_boxplot() + ggtitle("Plot of Default vs ln(Open Accounts)") + xlab("Default") + ylab("Open Accounts")
+
+ggplot(train, aes(x=as.factor(default), y=log(income))) + geom_boxplot() + ggtitle("Plot of Default vs ln(Income)") + xlab("Default") + ylab("ln(Income)")
+
+ggplot(train, aes(x=as.factor(default), y=dti)) + geom_boxplot() + 
+  ggtitle("Plot of Default vs DTI") + xlab("Default") + ylab("DTI")
+
+ggplot(train, aes(x=as.factor(default), y=log(loan_amnt))) + geom_boxplot() + 
+  ggtitle("Plot of Default vs Loan Amount") + xlab("Default") + ylab("Loan Amount")
+
+```
+```{r}
+table(train$default, train$homeowner)
+table(train$default, train$employment)
+table(train$default, train$pub_bankrupt)
+table(train$default, train$pub_derog)
+table(train$default, train$delinq_2yrs)
+```
+```{r}
+#Substitute 0 -> 0.01, avoid ln(0)
+#train[train$income == 0,][3] <- 0.01
+#train[train$open_acc == 0,][4] <- 0.01
+#train[train$months_since_delinq == 0,][7] <- 0.01
+```
+```{r}
+train$ln_income <- log(train$income)
+train$ln_open_acc <- log(train$open_acc)
+train$ln_loan_amnt <- log(train$loan_amnt)
+
+test$ln_income <- log(test$income)
+test$ln_open_acc <- log(test$open_acc)
+test$ln_loan_amnt <- log(test$loan_amnt)
+```
+```{r}
+initial_fit <- glm(default ~ ln_income + ln_open_acc + ln_loan_amnt + dti + homeowner + employment
+                   + pub_bankrupt + pub_derog + delinq_2yrs,data=train, family=binomial, maxit=500, x=T)
+```
+```{r}
+summary(initial_fit)
+```
+```{r}
+gstat <- initial_fit$null.deviance - deviance(initial_fit)
+cbind(gstat, 1-pchisq(gstat,length(coef(initial_fit))-1))
+```
+```{r}
+exp(coef(initial_fit)[-1])
+```
+```{r}
+drop1(initial_fit, test="LRT") #this is the deviance table 
+```
+```{r}
+hoslem.test(train$default, fitted(initial_fit))
+```
+```{r}
+#Dxy (Somers D) is far too low
+dd <- datadist(train) 
+options(datadist="dd")
+
+initial_fit.lrm <- lrm(default ~ ln_income + ln_open_acc + ln_loan_amnt + dti + homeowner + employment
+                   + pub_bankrupt + pub_derog + delinq_2yrs, data=train, x=T, y=T)
+residuals(initial_fit.lrm, type="gof") #global test of goodness of fit
+```
+```{r}
+initial_fit.lrm$stats
+```
+```{r}
+initial_diag <- glm.diag(initial_fit)
+spearson <- residuals(initial_fit, type="pearson")/sqrt(1-initial_diag$h)
+print.data.frame(cbind(spearson,initial_diag$cook,initial_diag$h))
+```
+```{r}
+glm.diag.plots(initial_fit, initial_diag)
+```
+```{r}
+train$row_id <- seq.int(nrow(train))
+```
+```{r}
+#2.5*(1+9)/1000 = 0.025
+hatvalues <- data.frame(initial_diag$h)
+hatvalues <- data.frame(tibble::rowid_to_column(hatvalues, "ID"))
+hatvalues <- hatvalues[order(hatvalues$initial_diag.h, decreasing=TRUE),]
+print.data.frame(hatvalues)
+```
+```{r}
+train[train$row_id %in% c(as.numeric(rownames(head(hatvalues, 28)))),]
+```
+
+```{r}
+cook <- data.frame(initial_diag$cook)
+cook <- data.frame(tibble::rowid_to_column(cook, "ID"))
+print.data.frame(cook[order(cook$initial_diag.cook, decreasing=TRUE),])
+```
+```{r}
+train[train$row_id %in% c(as.numeric(rownames(head(cook, 1)))),]
+```
+```{r}
+train2 <- train[!train$row_id %in% c(as.numeric(rownames(head(hatvalues, 28)))),]
+train2 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(cook, 1)))),]
+train2$row_id <- seq.int(nrow(train2)) #need to reindex
+```
+```{r}
+fit2 <- glm(default ~ ln_income + ln_open_acc + ln_loan_amnt + dti + homeowner + employment
+                   + pub_bankrupt + pub_derog + delinq_2yrs,data=train2, family=binomial, maxit=500, x=T)
+```
+```{r}
+summary(fit2)
+```
+```{r}
+gstat <- fit2$null.deviance - deviance(fit2)
+cbind(gstat, 1-pchisq(gstat,length(coef(fit2))-1))
+```
+```{r}
+hoslem.test(train2$default, fitted(fit2))
+```
+```{r}
+exp(coef(fit2)[-1])
+```
+```{r}
+drop1(fit2, test="LRT")
+```
+```{r}
+#Dxy (Somers D) is far too low
+dd <- datadist(train2) 
+options(datadist="dd")
+
+fit2.lrm <- lrm(default ~ ln_income + ln_open_acc + ln_loan_amnt + dti + homeowner + employment
+                   + pub_bankrupt + pub_derog + delinq_2yrs, data=train2, x=T, y=T)
+residuals(fit2.lrm, type="gof") #global test of goodness of fit
+```
+```{r}
+fit2.lrm$stats
+```
+```{r}
+fit2_diag <- glm.diag(fit2)
+spearson <- residuals(fit2, type="pearson")/sqrt(1-fit2_diag$h)
+p_residuals <- data.frame(cbind(spearson,fit2_diag$cook,fit2_diag$h))
+print.data.frame(p_residuals)
+```
+```{r}
+glm.diag.plots(fit2, fit2_diag)
+```
+```{r}
+residuals <- data.frame(tibble::rowid_to_column(p_residuals[1], "ID"))
+residuals <- data.frame(residuals[order(residuals$spearson, decreasing=TRUE),])
+print.data.frame(residuals)
+```
+```{r}
+#2.5*(1+9)/971 = 0.026
+hatvalues <- data.frame(fit2_diag$h)
+hatvalues <- data.frame(tibble::rowid_to_column(hatvalues, "ID"))
+hatvalues <- hatvalues[order(hatvalues$fit2_diag.h, decreasing=TRUE),]
+print.data.frame(hatvalues)
+```
+```{r}
+train2[train2$row_id %in% c(as.numeric(rownames(head(hatvalues, 36)))),]
+```
+```{r}
+cook <- data.frame(fit2_diag$cook)
+cook <- data.frame(tibble::rowid_to_column(cook, "ID"))
+print.data.frame(cook[order(cook$fit2_diag.cook, decreasing=TRUE),])
+```
+```{r}
+train2[train2$row_id %in% c(as.numeric(rownames(head(cook, 0)))),]
+```
+```{r}
+train3 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(hatvalues, 36)))),]
+#train3 <- train3[!train3$row_id %in% c(as.numeric(rownames(head(cook, 5)))),]
+train3$row_id <- seq.int(nrow(train3)) #need to reindex
+```
+```{r}
+
+```
+```{r}
+fit3 <- glm(default ~ ln_income + ln_open_acc + ln_loan_amnt + dti + homeowner + employment
+                   + pub_bankrupt + delinq_2yrs,data=train3, family=binomial, maxit=500, x=T)
+```
+```{r}
+summary(fit3)
+```
+```{r}
+gstat <- fit3$null.deviance - deviance(fit3)
+cbind(gstat, 1-pchisq(gstat,length(coef(fit3))-1))
+```
+```{r}
+hoslem.test(train3$default, fitted(fit3))
+```
+```{r}
+exp(coef(fit3)[-1])
+```
+```{r}
+drop1(fit3, test="LRT")
+```
+```{r}
+#Dxy (Somers D) is far too low
+dd <- datadist(train3) 
+options(datadist="dd")
+
+fit3.lrm <- lrm(default ~ ln_income + ln_open_acc + ln_loan_amnt + dti + homeowner + employment
+                   + pub_bankrupt + delinq_2yrs, data=train3, x=T, y=T)
+residuals(fit3.lrm, type="gof") #global test of goodness of fit
+```
+```{r}
+fit3.lrm$stats
+```
+```{r}
+fit3_diag <- glm.diag(fit3)
+spearson <- residuals(fit3, type="pearson")/sqrt(1-fit3_diag$h)
+p_residuals <- data.frame(cbind(spearson,fit3_diag$cook,fit3_diag$h))
+```
+```{r}
+glm.diag.plots(fit3, fit3_diag)
+```
+```{r}
+
+```
+```{r}
+residuals <- data.frame(tibble::rowid_to_column(p_residuals[1], "ID"))
+residuals <- data.frame(residuals[order(residuals$spearson, decreasing=TRUE),])
+print.data.frame(residuals)
+```
+```{r}
+#2.5*(1+9)/935 = 0.027
+hatvalues <- data.frame(fit3_diag$h)
+hatvalues <- data.frame(tibble::rowid_to_column(hatvalues, "ID"))
+hatvalues <- hatvalues[order(hatvalues$fit3_diag.h, decreasing=TRUE),]
+print.data.frame(hatvalues)
+```
+```{r}
+#no more clear issues, lets save this training data. Then do best subset
+write.csv(train3, './Dataset/cleaned_train.csv')
+write.csv(test, './Dataset/transformed_test.csv')
+```

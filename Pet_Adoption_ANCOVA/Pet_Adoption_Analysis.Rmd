@@ -1,0 +1,390 @@
+---
+title: "Pet Adoption Analysis"
+output: html_notebook
+---
+```{r}
+#Clear global environment
+ls()
+remove(list = ls())
+gc()
+```
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(multcomp)
+```
+```{r}
+pets <- read.csv('./Dataset/cleaned_pets_data.csv')
+pets <- pets[c('Time_Spent', 'Age', 'Group')]
+```
+```{r}
+#70/30 split
+train <- pets[1:1145,]
+test <- pets[1145:1636,]
+```
+```{r}
+#Set as factor
+train$Group <- factor(train$Group,levels=c("Hounding","Toy","Working", "Terrier", "Herding","Sporting")) 
+contrasts(train$Group) <- contr.sum(6) #Creates the effect codings
+#contrasts(train$Group)
+
+attach(train)
+```
+```{r}
+summary(Time_Spent)
+summary(Group)
+summary(Age)
+```
+```{r}
+#Initial plots of the data
+#Extreme right tail
+#log-log appropriate, implies an exponetial increase in time spent
+# when age increases 
+# There could be sub-groups here, we need Leveines. 
+hist(train$Time_Spent)
+hist(train$Age)
+ggplot(train, aes(x=log(Age), y=log(Time_Spent))) + geom_point() + ggtitle("Plot of log(Days_Spent) vs log(Age)") + xlab("Logged Age at Adoption Time") + ylab("Logged Days Spent at Shelter")
+
+ggplot(train, aes(x=Group, y=log(Time_Spent))) + geom_boxplot() + ggtitle("Plot of log(Days_Spent) vs Group") + xlab("Group") + ylab("Logged Days Spent at Shelter")
+
+ggplot(train, aes(x=Group, y=log(Age))) + geom_boxplot() + ggtitle("Plot of log(Age) vs Group") + xlab("Group") + ylab("Logged Days Spent at Shelter")
+```
+```{r}
+#Log the response and age variable
+train$Time_Spent <- log(train$Time_Spent, 10)
+train$Age <- log(train$Age, 10)
+train[mapply(is.infinite, train)] <- 0
+colnames(train)[c(1,2)] <- c('log_Time_Spent', 'log_Age')
+attach(train)
+```
+
+## Part 1: Test constant shift (simplier model) + WLS
+
+```{r}
+##Lets go through constant shift model first
+aov1 <- aov(log_Time_Spent ~ log_Age + Group, data=train)
+coef(aov1)
+```
+
+```{r}
+Anova(aov1, type=3)
+```
+```{r}
+fit1 <- lm(log_Time_Spent ~ log_Age + Group, data=train)
+summary(fit1)
+```
+```{r}
+#A typical dog is 82.38 months old (6.865 years)
+#Hounding breed for a typical s
+model.tables(aov1,type = 'means', cterms="Group")
+```
+```{r}
+model.tables(aov1,cterms="Group")$tables$Group+coef(aov1)[1]+coef(aov1)[2]*mean(log_Age)
+```
+```{r}
+sapply(split(log_Time_Spent,Group),summary)
+```
+```{r}
+aov1.tukey <- glht(aov1, linfct=mcp(Group="Tukey"))
+summary(aov1.tukey)
+```
+```{r}
+print(confint(aov1.tukey))
+par(mar=c(5,10,4,4))
+plot(print(confint(aov1.tukey)))
+```
+```{r}
+plot(aov1)
+```
+```{r}
+##Ok we want to check variance of residuals now. Lets do a Levenes test + plot of category vs std_residuals
+sresa = rstandard(aov1)
+
+#Levene's Test
+absres <- abs(sresa)
+anova(lm(absres ~ Group, data=train))
+```
+```{r}
+check <- cbind(train, sresa)
+#colnames(check)[4] <- c('std_residual')
+print.data.frame(check)
+```
+```{r}
+plot(cooks.distance(fit1))
+```
+
+```{r}
+ggplot(data=check, aes(x=Group, y=sresa)) + geom_boxplot() + ggtitle('Standardized Residuals vs Breed')
+```
+```{r}
+##WLS should be used here
+#Getting weights
+groupsd <- sapply(split(sresa,train$Group),sd)
+wt <- 1/(groupsd[as.numeric(train$Group)]^2)
+aov_wls <- aov(log_Time_Spent ~ log_Age + Group, weight=wt, data=train)
+coef(aov_wls)
+```
+```{r}
+Anova(aov_wls, type=3)
+```
+```{r}
+train$row_id <- seq.int(nrow(train)) #need to reindex
+```
+```{r}
+fit2 <- lm(log_Time_Spent ~ log_Age + Group, weight=wt, data=train)
+summary(fit2)
+```
+```{r}
+plot(fit2)
+```
+```{r}
+sresa = rstandard(fit2)
+#Levene's Test
+absres <- abs(sresa)
+anova(lm(absres ~ Group, data=train))
+```
+```{r}
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(fit2)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit2., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(train[c(rownames(head(std_residual, 9))),])
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(6+1)/1145 which is hi > 0.015 right now
+hatvalues <- data.frame(hatvalues(fit2))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit2., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+#print.data.frame(train[c(rownames(head(hatvalues, 0))),])
+```
+```{r}
+cooksd <- data.frame(cooks.distance(fit2))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit2., decreasing=TRUE),][2]
+plot(cooks.distance(fit2))
+```
+```{r}
+#print.data.frame(train[c(rownames(head(cooksd, 0))),])
+```
+```{r}
+train2 <- train[!train$row_id %in% c(as.numeric(rownames(head(std_residual, 9)))),]
+#train2 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(hatvalues, 34)))),]
+#train2 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(cooksd, 2)))),]
+train2$row_id <- seq.int(nrow(train2)) #need to reindex
+```
+```{r}
+#Get the weights  
+aov2 <- aov(log_Time_Spent ~ log_Age + Group, data=train2)
+sresa = rstandard(aov2)
+groupsd <- sapply(split(sresa,train2$Group),sd)
+wt2 <- 1/(groupsd[as.numeric(train2$Group)]^2)
+aov_wls2 <- aov(log_Time_Spent ~ log_Age + Group, weight=wt2, data=train2)
+coef(aov_wls2)
+```
+```{r}
+Anova(aov_wls2, type=3)
+```
+
+```{r}
+fit3 <- lm(log_Time_Spent ~ log_Age + Group, weight=wt2, data=train2)
+summary(fit3)
+```
+```{r}
+plot(fit3)
+```
+```{r}
+sresa = rstandard(fit3)
+
+#Levene's Test
+absres <- abs(sresa)
+anova(lm(absres ~ Group, data=train2))
+```
+```{r}
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(fit3)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit3., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(train2[c(rownames(head(std_residual, 7))),])
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(6+1)/1136 which is hi > 0.015 right now
+hatvalues <- data.frame(hatvalues(fit3))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit3., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+#print.data.frame(train[c(rownames(head(hatvalues, 0))),])
+```
+```{r}
+cooksd <- data.frame(cooks.distance(fit3))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit3., decreasing=TRUE),][2]
+plot(cooks.distance(fit3))
+```
+```{r}
+train3 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(std_residual, 7)))),]
+#train2 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(hatvalues, 34)))),]
+#train2 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(cooksd, 2)))),]
+train3$row_id <- seq.int(nrow(train3)) #need to reindex
+```
+```{r}
+aov3 <- aov(log_Time_Spent ~ log_Age + Group, data=train3)
+sresa = rstandard(aov3)
+groupsd <- sapply(split(sresa,train3$Group),sd)
+wt3 <- 1/(groupsd[as.numeric(train3$Group)]^2)
+aov_wls3 <- aov(log_Time_Spent ~ log_Age + Group, weight=wt3, data=train3)
+coef(aov_wls3)
+```
+```{r}
+Anova(aov_wls3, type=3)
+```
+
+```{r}
+fit4 <- lm(log_Time_Spent ~ log_Age + Group, weight=wt3, data=train3)
+summary(fit4)
+```
+```{r}
+plot(fit4)
+```
+```{r}
+#Levene's Test
+sresa = rstandard(fit4)
+absres <- abs(sresa)
+anova(lm(absres ~ Group, data=train3))
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(fit4)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit4., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+print.data.frame(train3[c(rownames(head(std_residual, 3))),])
+```
+```{r}
+train4 <- train3[!train3$row_id %in% c(as.numeric(rownames(head(std_residual, 3)))),]
+train4$row_id <- seq.int(nrow(train4)) #need to reindex
+```
+```{r}
+aov4 <- aov(log_Time_Spent ~ log_Age + Group, data=train4)
+sresa = rstandard(aov4)
+groupsd <- sapply(split(sresa,train4$Group),sd)
+wt4 <- 1/(groupsd[as.numeric(train4$Group)]^2)
+aov_wls4 <- aov(log_Time_Spent ~ log_Age + Group, weight=wt4, data=train4)
+coef(aov_wls4)
+```
+```{r}
+Anova(aov_wls4, type=3)
+```
+```{r}
+fit5 <- lm(log_Time_Spent ~ log_Age + Group, weight=wt4, data=train4)
+summary(fit5)
+```
+```{r}
+plot(fit5)
+```
+```{r}
+#Levene 
+sresa <- rstandard(fit5)
+absres <- abs(sresa)
+anova(lm(absres ~ Group, data=train4))
+```
+
+```{r}
+##This is probably the best constant shift model
+##Lets finish up diagnostics
+check <- cbind(train4, sresa)
+colnames(check)[4] <- c('std_residual')
+ggplot(data=check, aes(x=Group, y=sresa)) + geom_boxplot() + ggtitle('Standardized Residuals vs Breed')
+ggplot(data=check, aes(x=log_Age, y=sresa)) + geom_point() + ggtitle('Standardized Residuals vs log(Age)')
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(fit5)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit5., decreasing=TRUE),][2]
+print.data.frame(std_residual)
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(6+1)/1136 which is hi > 0.015 right now
+hatvalues <- data.frame(hatvalues(fit5))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit5., decreasing=TRUE),][2]
+print.data.frame(hatvalues)
+```
+```{r}
+#0 leverage points 
+#print.data.frame(train[c(rownames(head(hatvalues, 0))),])
+```
+```{r}
+cooksd <- data.frame(cooks.distance(fit5))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit5., decreasing=TRUE),][2]
+plot(cooks.distance(fit5))
+```
+```{r}
+#Set as factor
+test2 <- test
+test2$Group <- factor(test2$Group,levels=c("Hounding","Toy","Working", "Terrier", "Herding","Sporting")) 
+contrasts(test2$Group) <- contr.sum(6) #Creates the effect codings
+contrasts(test2$Group)
+```
+```{r}
+#Log the response and age variable
+test2$Time_Spent <- log(test2$Time_Spent, 10)
+test2$Age <- log(test2$Age, 10)
+test2[mapply(is.infinite, test2)] <- 0
+colnames(test2)[c(1,2)] <- c('log_Time_Spent', 'log_Age')
+```
+```{r}
+print.data.frame(test2)
+```
+```{r}
+aovf <- aov(log_Time_Spent ~ log_Age + Group + log_Age*Group, data=test2)
+sresa = rstandard(aovf)
+groupsd <- sapply(split(sresa,test2$Group),sd)
+wtf <- 1/(groupsd[as.numeric(test2$Group)]^2)
+```
+```{r}
+predictions <- cbind(predict(fit5, test2, interval="predict", level=0.95, weights =wtf ), test2[1])
+print.data.frame(predictions)
+```
+```{r}
+predictions[1] <- 10**predictions[1]
+predictions[2] <- 10**predictions[2]
+predictions[3] <- 10**predictions[3]
+predictions[4] <- 10**predictions[4]
+print.data.frame(predictions)
+```
+```{r}
+write.csv(predictions, './Dataset/constant_shift_predictions.csv')
+```
+
+```{r}
+model.tables(aov4 ,type = 'means', cterms="Group")
+```
+```{r}
+model.tables(aov4,cterms="Group")$tables$Group+coef(aov4)[1]+coef(aov4)[2]*mean(log_Age)
+```
+
+
+

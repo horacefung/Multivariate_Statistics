@@ -1,0 +1,94 @@
+---
+title: "Lending Club Default Initial"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+#Clear global environment
+ls()
+remove(list = ls())
+gc()
+```
+```{r}
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+```
+```{r}
+loans <- as.data.frame(read_csv("./Dataset/LoanStats3d2.csv"))
+```
+```{r}
+loans <- loans[complete.cases(loans),]
+```
+```{r}
+summary(loans)
+```
+
+```{r}
+colnames(loans)
+```
+```{r}
+###Some data processing
+#1) We need to create binaries for default
+#2) Fill na's for delinquencies 
+#3) Fix the employment length
+
+colnames(loans) <- c('default', 'loan_amnt', 'int_rate', 'employment', 'homeowner', 'income', 'dti', 'delinq_2yrs', 'open_acc', 'pub_derog', 'pub_bankrupt')
+colnames(loans)
+```
+```{r}
+#Create binaries
+loans[loans$default == 'Default' | loans$default == 'Charged Off',][1] <- 1
+loans[loans$default == 'Fully Paid',][1] <- 0
+```
+```{r}
+#Fix employment length
+loans <- loans[loans$employment != 'n/a',]
+loans$employment <- gsub("\\D", "", loans$employment)
+loans$employment <- as.numeric(loans$employment)
+```
+```{r}
+#Define 3 groups
+hist(loans$employment, breaks=seq(0,10,l=10))
+```
+```{r}
+#The best we can do is redefine the groups for employemnt
+#Below 1 years, above 10 years and everyone else
+loans[loans$employment < 10,][4] <- 'below_10'
+loans[loans$employment == 10,][4] <- "10_or_above"
+```
+```{r}
+#Turn bankruptcies and derogratories and deliquncies into binary
+loans[loans$delinq_2yrs != 0,][8] <- 1
+loans[loans$pub_derog != 0,][10] <- 1
+loans[loans$pub_bankrupt != 0,][11] <- 1
+```
+```{r}
+#Lets also drop OWN in homeowners, keep it 1/0 situation
+loans <- loans[loans$homeowner != 'OWN',]
+```
+```{r}
+#Randomnize 
+loans <- sample(loans)
+```
+```{r}
+#70,480/354459 = 19.88% population base rate
+#Can we sample something similar to that 
+defaults <- loans[loans$default == 1,]
+paid <- loans[loans$default == 0,]
+```
+```{r}
+##Opt to do this retroactively. Sample 500 1's and 500 0's, then adjust B0.
+train <- rbind(head(defaults,500), head(paid,500))
+test <- rbind(tail(defaults,800), tail(paid,200))
+```
+```{r}
+write.csv(train, './Dataset/train.csv', row.names=FALSE)
+write.csv(test, './Dataset/test.csv', row.names=FALSE)
+```
+

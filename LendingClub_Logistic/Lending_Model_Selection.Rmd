@@ -1,0 +1,426 @@
+---
+title: "Model Selection"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(bestglm)
+library(leaps)
+library(rms)
+library(ResourceSelection)
+library(boot)
+```
+```{r}
+#Clear global environment
+ls()
+remove(list = ls())
+gc()
+```
+```{r}
+train <- read.csv('./Dataset/cleaned_train.csv')
+leverage_points <- read_excel('./Dataset/feed_unusual_observations.xlsx')
+test <- read.csv('./Dataset/transformed_test.csv')
+```
+```{r}
+attach(train)
+```
+```{r}
+logitbest <- bestglm(data.frame(cbind(ln_income, ln_loan_amnt, dti, homeowner, employment),default), IC="AIC")
+```
+```{r}
+#AIC = 2k - 2ln, it doesnt matter if its negative, more negative generally better
+logitbest$Subsets
+```
+```{r}
+aicc <- data.frame(logitbest$Subsets[8])
+aicc$predictors <- c(0, 1, 2, 3, 4, 5)
+aicc <- transform(aicc, AICc = AIC + (2*(predictors+2)*(predictors+3)/(935-predictors-3)))
+```
+```{r}
+ggplot(aicc, aes(x=predictors, y=AICc)) + geom_point() + ggtitle("AICc Plot") + xlab("Predictors") + ylab("AICc")
+```
+```{r}
+#Lets try 3, 4 and 5 predictors
+fit3 <- glm(default ~ ln_loan_amnt + dti + homeowner,data=train, family=binomial, maxit=500, x=T)
+```
+```{r}
+summary(fit3)
+```
+```{r}
+vif(fit3)
+```
+
+```{r}
+gstat <- fit3$null.deviance - deviance(fit3)
+cbind(gstat, 1-pchisq(gstat,length(coef(fit3))-1))
+```
+```{r}
+exp(coef(fit3)[-1])
+```
+```{r}
+drop1(fit3, test="LRT") #this is the deviance table 
+```
+```{r}
+hoslem.test(train$default, fitted(fit3))
+```
+```{r}
+#Dxy (Somers D) is far too low
+dd <- datadist(train) 
+options(datadist="dd")
+
+fit3.lrm <- lrm(default ~ ln_loan_amnt + dti + homeowner, data=train, x=T, y=T)
+
+residuals(fit3.lrm, type="gof") #global test of goodness of fit
+```
+```{r}
+fit3.lrm$stats
+```
+```{r}
+fit3.predict <- as.numeric(fitted(fit3) > .5)
+table(default, fit3.predict)
+```
+```{r}
+pred <- predict(fit3, leverage_points)
+predict <- as.numeric(pred > .50)
+table(leverage_points$default, predict)
+```
+
+```{r}
+# Cmax = max(469/935, 466/935) = 0.5016
+# Observed correct = (289+271)/935 = 0.5989
+
+# P(Actual 0 n Predicted 0) =  (289+180)/935 * (289+195)/935 = 0.25965
+# P(Actual 1 n Predicted 1) =  (195+271)/935 * (180+271)/935 = 0.24040
+# Cpro = 1.25 * (0.25965 + 0.24040) = 0.6251 (x1.25 to account for the fact we used data twice)
+```
+```{r}
+#########
+```
+```{r}
+fit4 <- glm(default ~ ln_income + ln_loan_amnt + dti + homeowner,data=train, family=binomial, maxit=500, x=T)
+```
+```{r}
+summary(fit4)
+```
+```{r}
+vif(fit4)
+```
+
+```{r}
+gstat <- fit4$null.deviance - deviance(fit4)
+cbind(gstat, 1-pchisq(gstat,length(coef(fit4))-1))
+```
+```{r}
+exp(coef(fit4)[-1])
+```
+```{r}
+drop1(fit4, test="LRT") #this is the deviance table 
+```
+```{r}
+hoslem.test(train$default, fitted(fit4))
+```
+```{r}
+#Dxy (Somers D) is far too low
+dd <- datadist(train) 
+options(datadist="dd")
+
+fit4.lrm <- lrm(default ~ ln_income + ln_loan_amnt + dti + homeowner, data=train, x=T, y=T)
+
+residuals(fit4.lrm, type="gof") #global test of goodness of fit
+```
+```{r}
+fit4.lrm$stats
+```
+
+```{r}
+fit4.predict <- as.numeric(fitted(fit4) > .5)
+table(default, fit4.predict)
+```
+```{r}
+pred <- predict(fit4, leverage_points)
+predict <- as.numeric(pred > .50)
+table(leverage_points$default, predict)
+```
+```{r}
+# Cmax = max(469/935, 466/935) = 0.5016
+# Observed correct = (297+286)/935 = 0.6235
+
+# P(Actual 0 n Predicted 0) =  (500)/1000 * (530)/1000 = 0.265
+# P(Actual 1 n Predicted 1) =  (500)/1000 * (470)/1000 = 0.235
+# Cpro = 1.25 * (0.25590 + 0.24413) = 0.6250 (x1.25 to account for the fact we used data twice)
+```
+```{r}
+#########
+```
+```{r}
+fit5 <- glm(default ~ ln_income + ln_loan_amnt + dti + homeowner + employment,data=train, family=binomial, maxit=500, x=T)
+```
+```{r}
+summary(fit5)
+```
+```{r}
+vif(fit5)
+```
+
+```{r}
+#Analogous to F-Test of model 5 vs model 4
+# Chi-squared test
+gstat <- deviance(fit4) - deviance(fit5)
+cbind(gstat, 1-pchisq(gstat,1)) #the DF is the difference between the number of parameters in the two models
+```
+```{r}
+1-pchisq(gstat,10)
+```
+
+```{r}
+#test_complex <- fit5$null.deviance - deviance(fit5)
+#cbind(gstat, 1-pchisq(gstat,length(coef(fit5))-1))
+
+```
+
+```{r}
+exp(coef(fit5)[-1])
+```
+```{r}
+drop1(fit5, test="LRT") #this is the deviance table 
+```
+```{r}
+hoslem.test(train$default, fitted(fit5))
+```
+```{r}
+#Dxy (Somers D) is far too low
+dd <- datadist(train) 
+options(datadist="dd")
+
+fit5.lrm <- lrm(default ~ ln_income + ln_loan_amnt + dti + homeowner + employment, data=train, x=T, y=T)
+
+residuals(fit5.lrm, type="gof") #global test of goodness of fit
+```
+```{r}
+fit5.lrm$stats
+```
+```{r}
+fit5.predict <- as.numeric(fitted(fit5) > .5)
+table(default, fit5.predict)
+```
+```{r}
+pred <- predict(fit5, leverage_points)
+predict <- as.numeric(pred > .50)
+table(leverage_points$default, predict)
+```
+
+```{r}
+# Cmax = max(469/935, 466/935) = 0.5016
+# Observed correct = (289+287)/935 = 0.6160
+
+# P(Actual 0 n Predicted 0) =  (500)/1000 * (523)/1000 = 0.2615
+# P(Actual 1 n Predicted 1) =  (500)/100 * (477)/1000 = 0.2385
+# Cpro = 1.25 * (0.2615 + 0.2385) = 0.6250 (x1.25 to account for the fact we used data twice)
+```
+```{r}
+#####
+#Choose model 4, but have to check for unusual observations
+```
+```{r}
+fit4_diag <- glm.diag(fit4)
+spearson <- residuals(fit4, type="pearson")/sqrt(1-fit4_diag$h)
+print.data.frame(cbind(spearson,fit4_diag$cook,fit4_diag$h))
+```
+```{r}
+glm.diag.plots(fit4, fit4_diag)
+```
+```{r}
+train$row_id <- seq.int(nrow(train))
+```
+```{r}
+p_residuals <- data.frame(cbind(spearson,fit4_diag$cook,fit4_diag$h))
+residuals <- data.frame(tibble::rowid_to_column(p_residuals[1], "ID"))
+residuals <- data.frame(residuals[order(residuals$spearson, decreasing=TRUE),])
+print.data.frame(residuals)
+```
+```{r}
+#2.5*(1+4)/935 = 0.013
+hatvalues <- data.frame(fit4_diag$h)
+hatvalues <- data.frame(tibble::rowid_to_column(hatvalues, "ID"))
+hatvalues <- hatvalues[order(hatvalues$fit4_diag.h, decreasing=TRUE),]
+print.data.frame(hatvalues)
+```
+```{r}
+print.data.frame(train[train$row_id %in% c(as.numeric(rownames(head(hatvalues, 19)))),])
+```
+```{r}
+cook <- data.frame(fit4_diag$cook)
+cook <- data.frame(tibble::rowid_to_column(cook, "ID"))
+print.data.frame(cook[order(cook$fit4_diag, decreasing=TRUE),])
+```
+```{r}
+train2 <- train[!train$row_id %in% c(as.numeric(rownames(head(hatvalues, 19)))),]
+train2 <- train2[!train2$row_id %in% c(as.numeric(rownames(head(cook, 3)))),]
+train2$row_id <- seq.int(nrow(train2)) #need to reindex
+train2 <- train2[train2$row_id != 1,] #manually remove that weird point
+```
+```{r}
+##Check again
+fit4 <- glm(default ~ ln_income + ln_loan_amnt + dti + homeowner,data=train2, family=binomial, maxit=500, x=T)
+```
+```{r}
+fit4_diag <- glm.diag(fit4)
+spearson <- residuals(fit4, type="pearson")/sqrt(1-fit4_diag$h)
+print.data.frame(cbind(spearson,fit4_diag$cook,fit4_diag$h))
+```
+```{r}
+glm.diag.plots(fit4, fit4_diag)
+```
+```{r}
+vif(fit5)
+```
+
+```{r}
+## redo best subset
+```
+```{r}
+attach(train2)
+```
+```{r}
+logitbest <- bestglm(data.frame(cbind(ln_income, ln_loan_amnt, dti, homeowner, employment),default), IC="AIC")
+```
+```{r}
+#AIC = 2k - 2ln, it doesnt matter if its negative, more negative generally better
+logitbest$Subsets
+```
+```{r}
+aicc <- data.frame(logitbest$Subsets[8])
+aicc$predictors <- c(0, 1, 2, 3, 4, 5)
+aicc <- transform(aicc, AICc = AIC + (2*(predictors+2)*(predictors+3)/(912-predictors-3)))
+```
+```{r}
+ggplot(aicc, aes(x=predictors, y=AICc)) + geom_point() + ggtitle("AICc Plot") + xlab("Predictors") + ylab("AICc")
+```
+```{r}
+
+```
+```{r}
+fit4 <- glm(default ~ ln_income + ln_loan_amnt + dti + homeowner,data=train2, family=binomial, maxit=500, x=T)
+```
+```{r}
+summary(fit4)
+```
+```{r}
+gstat <- fit4$null.deviance - deviance(fit4)
+cbind(gstat, 1-pchisq(gstat,length(coef(fit4))-1))
+```
+```{r}
+exp(coef(fit4)[-1])
+```
+```{r}
+drop1(fit4, test="LRT") #this is the deviance table 
+```
+```{r}
+hoslem.test(train2$default, fitted(fit4))
+```
+```{r}
+#Dxy (Somers D) is far too low
+dd <- datadist(train) 
+options(datadist="dd")
+
+fit4.lrm <- lrm(default ~ ln_income + ln_loan_amnt + dti + homeowner, data=train2, x=T, y=T)
+
+residuals(fit4.lrm, type="gof") #global test of goodness of fit
+```
+```{r}
+fit4.lrm$stats
+```
+
+```{r}
+fit4.predict <- as.numeric(fitted(fit4) > .5)
+table(default, fit4.predict)
+```
+```{r}
+fit4_diag <- glm.diag(fit4)
+spearson <- data.frame(residuals(fit4, type="pearson")/sqrt(1-fit4_diag$h))
+print.data.frame(cbind(spearson,fit4_diag$cook,fit4_diag$h))
+```
+```{r}
+vif(fit4)
+```
+
+```{r}
+glm.diag.plots(fit4, fit4_diag)
+```
+```{r}
+#Residuals vs predictors and hist
+check <- cbind(train2, spearson[1])
+colnames(check)[17] <- c('std_pearson_residual')
+ggplot(data=check, aes(x=homeowner, y=std_pearson_residual)) + geom_boxplot() + ggtitle('Standardized Pearson Residuals vs Homeowner(1)/Renter(0)')
+ggplot(data=check, aes(x=ln_income, y=std_pearson_residual)) + geom_point() + ggtitle('Standardized Pearson Residuals vs ln(Income)')
+ggplot(data=check, aes(x=ln_loan_amnt, y=std_pearson_residual)) + geom_point() + ggtitle('Standardized Pearson Residuals vs ln(Loan Amount)')
+ggplot(data=check, aes(x=dti, y=std_pearson_residual)) + geom_point() + ggtitle('Standardized Pearson Residuals vs DTI')
+```
+```{r}
+#Initial incorrect predictions
+pred.new <- predict(fit4, test, type="response")
+newclass.predict <- as.numeric(pred.new > .5)
+table_results <- table(test$default, newclass.predict)
+table_results
+```
+```{r}
+
+#We need to adjust B0 to the base rate now
+# Yes is a 1
+Ny <- 87 + 476
+Nn <- 113 + 324
+prosplogit <- predict(fit4, test) + log((.2*Nn)/(.8*Ny))
+prospprob <- exp(prosplogit)/(1 + exp(prosplogit))
+predict <- as.numeric(prospprob > .20)
+table_results <- table(test$default, predict)
+table_results
+```
+```{r}
+#Super rough cost benefit analysis
+#Mean average loan = 14,657
+
+#Mean average interest = 12.39%, mean revenue for true positive = 14,657 * 0.1239 = 1,816
+#Average maturity = 36*0.67 + 60*(1-0.67) = 43.92 months = 3.66 years
+#Mean revenue = 1,816 * 3.66 = 6646.56
+
+#Say you collect 1/3 interest and 1/3 principal = (2/3*14657) - (1/3 * 6646.56)
+
+# Profit = (TN * 6646.56) + (FN * - 14657) 
+
+columns <- 3
+rows <- 50
+threshold <- numeric(rows)
+TN_vec <- numeric(rows)
+FN_vec <- numeric(rows)
+
+#output <- matrix(ncol=columns, nrow = row)
+
+for (i in 1:rows){
+  predict <- as.numeric(prospprob > i/100)
+  table_results <- table(test$default, predict)
+  threshold[i] <- i/100
+  TN_vec[i] <- table_results[1]
+  FN_vec[i] <- table_results[2]
+}
+
+output <- data.frame(cbind(threshold, TN_vec, FN_vec))
+```
+```{r}
+output$Profit <- (output$TN_vec * 6646.56) - (output$FN_vec * 7328.5)
+```
+```{r}
+output
+```
+```{r}
+ggplot(output, aes(x=threshold, y=Profit)) + geom_point() + 
+  ggtitle("Plot of Profit Across Thresholds") + xlab("Thresholds") + ylab("Profit")
+```
+

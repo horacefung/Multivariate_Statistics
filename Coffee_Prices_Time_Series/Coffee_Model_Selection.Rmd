@@ -1,0 +1,457 @@
+---
+title: "Coffee Model Selection"
+output: html_notebook
+---
+
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(leaps)
+library(Hmisc)
+library(imputeTS)
+library(lmtest)
+library(randtests)
+```
+
+```{r}
+#Read data
+train <- read.csv('./Dataset/train.csv')
+test <- read.csv('./Dataset/test.csv')
+```
+```{r}
+train
+```
+
+```{r}
+#Just get the initial regression again
+initial <- lm(CoffeeReturn ~ Celsius + Rainfall + lagged_rain + FX_Return + lagged_oni + Winter + Jan2010 + Jan2012 + Jan2011, data = train)
+
+summary(initial)
+```
+```{r}
+vif(initial)
+```
+```{r}
+##Best subset
+regsubsets.out <-
+    regsubsets(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 +Celsius + Rainfall + lagged_rain + FX_Return +
+                 lagged_oni + Winter,
+                  data = train,
+                  nbest = 2,       # 1 best model for each number of predictors
+                  nvmax = NULL,    # NULL for no limit on number of variables
+                  force.in = c(1,2,3), force.out = NULL,
+                  method = "exhaustive")
+regsubsets.out
+```
+```{r}
+summary.out <- summary(regsubsets.out)
+subsets <- as.data.frame(summary.out$outmat)
+subsets
+```
+
+```{r}
+best_metrics <- cbind(data.frame(summary.out$rsq), data.frame(summary.out$adjr2),
+                      data.frame(summary.out$cp), data.frame(summary.out$rss))
+
+colnames(best_metrics)[1] <- 'R_Sq'
+colnames(best_metrics)[2] <- 'R_Sq_Adj'
+colnames(best_metrics)[3] <- 'Mallows_Cp'
+colnames(best_metrics)[4] <- 'RSS'
+
+```
+```{r}
+subset_table <- cbind(best_metrics, subsets)
+subset_table$Model <- seq.int(nrow(subset_table))
+subset_table$Predictors <- c(1,1,2,2,3,3,4,4,5,5,6)
+#subset_table[ , c(15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17)]
+subset_table <- transform(subset_table, RMS = RSS / (83-Predictors-1))
+
+#subset_table <- subset_table[ , c(15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17)]
+
+```
+```{r}
+##Get proper Cp
+##Cp = A- (n-2p); original n-2p = 83-2*(predictors + 1)
+##We already adjusted predictors -1 
+subset_table <- transform(subset_table, Mallows_Cp = (Mallows_Cp + (83-2*(Predictors+1))) - (82-2*Predictors))
+
+##Get MCp using 8 predictor model RMS = s^2
+subset_table <- transform(subset_table, MCp = Mallows_Cp + (Predictors-6-2)*(RMS)/(1008.753))
+```
+```{r}
+##Get proper R^2
+subset_table <- transform(subset_table, R_Sq_Adj = (R_Sq-1)*((82-1)/(82-6))+1)
+```
+```{r}
+subset_table
+```
+
+```{r}
+##Get AIC values
+subset_table$AIC <- c(AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + lagged_oni, data = train)), #1
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + FX_Return, data = train)), #2
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + FX_Return + lagged_oni, data = train)), #3
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Rainfall + lagged_oni, data = train)), #4
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + FX_Return + lagged_oni, data = train)), #5
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Rainfall + FX_Return + lagged_oni, data = train)), #6
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + Rainfall + FX_Return + lagged_oni, data = train)), #7
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + FX_Return + lagged_oni + Winter, data = train)),#8
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + Rainfall + FX_Return + lagged_oni + Winter, data = train)), #9
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + lagged_rain + FX_Return + lagged_oni + Winter, data = train)),#10
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + Rainfall + lagged_rain + FX_Return + lagged_oni + Winter, data = train))) #11
+  #AIC(lm(CoffeeReturn ~ Jan2010 + Celsius + Rainfall + lagged_rain + FuturesChange + lagged_oni + Summer, data = train)), #12
+  #AIC(lm(CoffeeReturn ~ Jan2010 + Celsius + Rainfall + lagged_rain + FX_Return + FuturesChange + lagged_oni + Summer, data = train)),#13
+  #AIC(lm(CoffeeReturn ~ Jan2010 + Celsius + Rainfall + lagged_rain + FX_Return + FuturesChange + lagged_oni + Winter, data = train)), #14
+  #AIC(lm(CoffeeReturn ~ Jan2010 + Celsius + Rainfall + lagged_rain + FX_Return + FuturesChange + lagged_oni + Summer + Winter, data =train))) #15
+  
+```
+```{r}
+##Get proper AIC
+## AIC = nln() + n + 2p + 4
+subset_table <- transform(subset_table, AIC = (AIC - 83 - 2*(Predictors-1) - 4 + 82 + 2*Predictors + 4))
+
+subset_table <- transform(subset_table, AICc = AIC + (2*(Predictors+2)*(Predictors+3)/(82-Predictors-3)))
+```
+```{r}
+subset_table
+```
+
+```{r}
+#Model 2 was clearly a poor model, exclude it as it
+#impacts the scalling and makes model selection harder to see
+ggplot(data=subset_table, aes(x=Model, y=R_Sq_Adj)) + geom_point() + ggtitle('Adjusted R^2  versus Model Index')
+ggplot(data=subset_table, aes(x=Model, y=MCp)) + geom_point() + ggtitle('MCp versus Model Index')
+ggplot(data=subset_table, aes(x=Model, y=AICc)) + geom_point()+ ggtitle('AICc versus Model Index')
+```
+```{r}
+#MCp: Models 7, 9, 10 look good
+#AICc: Models 9
+#R^2 : Models 9, 10 look good
+#Lets look at 3, 5, 7
+```
+
+```{r}
+model3 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + FX_Return + lagged_oni, data = train)
+
+summary(model3)
+```
+```{r}
+vif(model3)
+```
+
+```{r}
+model5 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + FX_Return + lagged_oni, data = train)
+
+summary(model5)
+```
+```{r}
+vif(model5)
+```
+
+```{r}
+model7 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Celsius + FX_Return + lagged_oni + Winter, data = train)
+
+summary(model7)
+```
+
+```{r}
+vif(model7)
+```
+
+```{r}
+plot(model3)
+```
+
+```{r}
+std.resf <- rstandard(model3)
+std.resf[is.na(std.resf)] <- 0
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+```{r}
+runs.test(std.resf)
+```
+```{r}
+dwtest(model3)
+```
+```{r}
+#Handling influential points
+std_residual <- data.frame(abs(rstandard(model3)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.model3.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+
+```
+```{r}
+train[train$row_id %in% c(as.numeric(rownames(tail(std_residual, 4)))),]
+```
+```{r}
+#2.5*2+1/80 = 0.094
+hatvalues <- data.frame(hatvalues(model3))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.model3.),][2]
+hatvalues
+```
+```{r}
+train[train$row_id %in% c(as.numeric(rownames(tail(hatvalues, 7)))),]
+```
+
+```{r}
+#Dealing with them
+train2 <- train
+train2[train2$row_id %in% c(64),][21]  <- data.frame(c(NA))[[1]] #May2014
+train2[21] <- na.interpolation(train2[21], option = "linear")[[1]]
+
+#train2$Dec2010 <- replicate(83,0)
+#train2$Dec2010[train2$row_id==23] <- 1
+
+train2$Sep2011 <- replicate(83,0)
+train2$Sep2011[train2$row_id==32] <- 1
+
+train2$Mar2015 <- replicate(83,0)
+train2$Mar2015[train2$row_id==74] <- 1
+
+train2$Sep2015 <- replicate(83,0)
+train2$Sep2015[train2$row_id==80] <- 1
+
+
+```
+```{r}
+train2[train2$row_id %in% c(17),][23]
+```
+```{r}
+model3.1 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + FX_Return + lagged_oni, data = train2)
+
+summary(model3.1)
+```
+
+```{r}
+std.resf <- rstandard(model3.1)
+std.resf[is.na(std.resf)] <- 0
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+
+```{r}
+plot(model3.1)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(model3.1)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.model3.1.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+train2[train2$row_id %in% c(as.numeric(rownames(tail(std_residual, 4)))),]
+```
+```{r}
+#2.5*3/77 = 0.97
+hatvalues <- data.frame(hatvalues(model3.1))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.model3.1.),][2]
+hatvalues
+```
+```{r}
+train2[train2$row_id %in% c(as.numeric(rownames(tail(hatvalues, 8)))),]
+```
+
+```{r}
+#Dealing with them
+train3 <- train2
+#train3[train3$row_id %in% c(63),][21]  <- data.frame(c(NA))[[1]] #null out the outliers
+#train3[21] <- na.interpolation(train3[21], option = "linear")[[1]]
+
+#train3$Dec2010 <- replicate(83,0)
+#train3$Dec2010[train3$row_id==12] <- 1
+
+train3$Aug2015 <- replicate(83,0)
+train3$Aug2015[train3$row_id==79] <- 1
+
+```
+```{r}
+model3.2 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + FX_Return + lagged_oni, data = train3)
+
+summary(model3.2)
+```
+
+```{r}
+plot(model3.2)
+```
+```{r}
+hatvalues <- data.frame(hatvalues(model3.2))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.model3.2.),][2]
+hatvalues
+```
+
+```{r}
+
+##Need to redo best subset with train2 data and new leverage
+##Best subset
+regsubsets.out <-
+    regsubsets(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Celsius + Rainfall
+               + lagged_rain + FX_Return + lagged_oni + Winter,
+                  data = train3,
+                  nbest = 2,       # 1 best model for each number of predictors
+                  nvmax = NULL,    # NULL for no limit on number of variables
+                  force.in = c(1,2,3,4,5,6,7), force.out = NULL,
+                  method = "exhaustive")
+regsubsets.out
+```
+```{r}
+summary.out <- summary(regsubsets.out)
+subsets <- as.data.frame(summary.out$outmat)
+subsets
+```
+
+## BEST SUBSET2
+```{r}
+best_metrics <- cbind(data.frame(summary.out$rsq), data.frame(summary.out$adjr2),
+                      data.frame(summary.out$cp), data.frame(summary.out$rss))
+
+colnames(best_metrics)[1] <- 'R_Sq'
+colnames(best_metrics)[2] <- 'R_Sq_Adj'
+colnames(best_metrics)[3] <- 'Mallows_Cp'
+colnames(best_metrics)[4] <- 'RSS'
+
+```
+```{r}
+subset_table <- cbind(best_metrics, subsets)
+subset_table$Model <- seq.int(nrow(subset_table))
+subset_table$Predictors <- c(1,1,2,2,3,3,4,4,5,5,6)
+subset_table <- transform(subset_table, RMS = RSS / (75-Predictors-1))
+
+```
+```{r}
+subset_table
+```
+
+```{r}
+subset_table <- transform(subset_table, Mallows_Cp = (Mallows_Cp + (82-2*(Predictors+4))) - (75-2*Predictors))
+
+##Get MCp using 8 predictor model RMS = s^2
+subset_table <- transform(subset_table, MCp = Mallows_Cp + (Predictors-6-2)*(RMS)/(2757.838))
+```
+```{r}
+##Get proper R^2
+subset_table <- transform(subset_table, R_Sq_Adj = (R_Sq-1)*((75-1)/(75-6))+1)
+```
+```{r}
+subset_table
+```
+
+```{r}
+##Get AIC values
+subset_table$AIC <- c(AIC(lm(CoffeeReturn ~  Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + lagged_oni, data = train3)), #1
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + FX_Return, data = train3)), #2
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + FX_Return + lagged_oni, data = train3)), #3
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Rainfall + lagged_oni, data = train3)), #4
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Rainfall + FX_Return + lagged_oni, data = train3)), #5
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + lagged_rain + FX_Return + lagged_oni, data = train3)), #6
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Rainfall + lagged_rain + FX_Return + lagged_oni, data = train3)), #7
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Celsius + Rainfall + FX_Return + lagged_oni, data = train3)),#8
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Celsius + Rainfall + lagged_rain + FX_Return + lagged_oni, data = train3)), #9
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Rainfall + lagged_rain + FX_Return + lagged_oni + Winter, data = train3)),#10
+  AIC(lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Celsius + Rainfall + lagged_rain + FX_Return + lagged_oni + Winter, data = train3))) #11
+
+```
+```{r}
+## AIC = nln() + n + 2p + 4
+subset_table <- transform(subset_table, AIC = (AIC - 79 - 2*(Predictors-1) - 4 + 75 + 2*Predictors + 4))
+
+subset_table <- transform(subset_table, AICc = AIC + (2*(Predictors+2)*(Predictors+3)/(75-Predictors-3)))
+```
+```{r}
+subset_table
+
+```
+```{r}
+ggplot(data=subset_table[-c(2),], aes(x=Model, y=R_Sq_Adj)) + geom_point() + ggtitle('Adjusted R^2  versus Model Index')
+ggplot(data=subset_table[-c(2),], aes(x=Model, y=MCp)) + geom_point() + ggtitle('MCp versus Model Index')
+ggplot(data=subset_table[-c(2),], aes(x=Model, y=AICc)) + geom_point()+ ggtitle('AICc versus Model Index')
+```
+```{r}
+model3 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + FX_Return + lagged_oni, data = train3)
+
+summary(model3)
+```
+```{r}
+vif(model3)
+```
+
+```{r}
+model5 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Rainfall + FX_Return + lagged_oni, data = train3)
+
+summary(model5)
+```
+```{r}
+vif(model5)
+```
+
+```{r}
+model7 <- lm(CoffeeReturn ~ Jan2010 + Jan2012 + Jan2011 + Sep2011 + Mar2015 + Sep2015 + Aug2015 + Rainfall + lagged_rain + FX_Return + lagged_oni, data = train3)
+
+summary(model7)
+```
+```{r}
+vif(model7)
+```
+
+```{r}
+##We decide on model 3
+plot(model3)
+```
+
+```{r}
+std.resf <- rstandard(model3)
+std.resf[is.na(std.resf)] <- 0
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+
+```{r}
+runs.test(std.resf)
+```
+```{r}
+dwtest(model3)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(model3)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.model3.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+
+```{r}
+## We'll settle for same model, model 3
+std_residual <- data.frame(abs(rstandard(model3)))
+final <- cbind(train2[c(6,17)], std_residual)
+colnames(final)[3] <- c('std_residual')
+final
+```
+
+```{r}
+ggplot(data=final[complete.cases(final),], aes(x=FX_Return, y=std_residual)) + geom_point() + ggtitle('Standardized Residuals vs Lagged_ONI Plot')
+
+ggplot(data=final[complete.cases(final),], aes(x=lagged_oni, y=std_residual)) + geom_point() + ggtitle('Standardized Residuals vs FX_Return Plot')
+```
+```{r}
+test2 <- test
+test2$Aug2015 <- replicate(11,0)
+test2$Sep2015 <- replicate(11,0)
+test2$Mar2015 <- replicate(11,0)
+test2$Sep2011 <- replicate(11,0)
+test2
+```
+
+```{r}
+cbind(data.frame(predict(model3, test2)), test2[20])
+```
+
+```{r}
+cbind(predict(model3, test2, interval="predict"), test2[20])
+```
+

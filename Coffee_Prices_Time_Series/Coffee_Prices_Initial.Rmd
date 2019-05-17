@@ -1,0 +1,534 @@
+---
+title: "Brazilian Arabica Coffee Prices, Assignment 4"
+output: html_notebook
+---
+```{r}
+#Clear global environment
+ls()
+remove(list = ls())
+gc()
+```
+
+```{r}
+#Import packages
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(zoo)
+library(Hmisc)
+library(imputeTS)
+library(lmtest)
+library(randtests)
+```
+```{r}
+#Read data, all monthly
+coffee <- read_csv("./Dataset/Coffee_Monthly.csv")
+temp0 <- read_csv("./Dataset/Brazil_Temp.csv")
+rain0 <- read_csv("./Dataset/Brazil_Rain.csv")
+fx <- read_csv("./Dataset/brazil_real_exchange_rate.csv") #brazilian real to usd exchange rate
+prod0 <- read_excel("./Dataset/brazil_coffee_production.xlsx") #complement
+inflation0 <- read_excel("./Dataset/CPI.xlsx") #adjustment to 2016 Dec
+seasons <- read_excel("./Dataset/seasons_encoded.xlsx")
+#futures <- read_csv("./Dataset/US_Coffee_Futures.csv")
+oni <- read_csv("./Dataset/Monthly Oceanic Nino Index (ONI) - Long.csv")
+```
+```{r}
+#Preserve only relevant columns
+colnames(coffee)[1:2] <- c('Date_Index', 'Coffee_Price')
+temp <- select(temp0, 'Temperature - (Celsius)', 'Date_Index')
+colnames(temp)[1] <- c('Celsius')
+rain <- select(rain0, 'Rainfall - (MM)', 'Date_Index')
+colnames(rain)[1] <- c('Rainfall')
+colnames(fx)[1:3] <- c('Date_Index', 'Real_USD', 'FX_Return')
+prod <- select(prod0, 'Date_Index', 'Production_Mil', 'Change')
+colnames(prod)[1:3] <- c('Date_Index', 'Production', 'ProdChange')
+inflation <- select(inflation0, 'CPI Adjust', 'Date_Index')
+#futures <- select(futures, 'Date_Index', 'Price', 'Change')
+#colnames(futures)[1:3] <- c('Date_Index', 'FuturesPrice', 'FuturesChange')
+oni <- select(oni, 'ONI', 'Date_Index')
+
+```
+```{r}
+#Convert to date type, helps preserve order when wrangling
+coffee[[1]] <- as.Date(coffee[[1]],'%m/%d/%Y')
+temp[[2]] <- as.Date(temp[[2]], '%m/%d/%Y')
+rain[[2]] <- as.Date(rain[[2]], '%m/%d/%Y')
+fx[[1]] <- as.Date(fx[[1]], '%m/%d/%Y')
+prod[[1]] <- as.Date(prod[[1]], '%m/%d/%Y')
+inflation[[2]] <- as.Date(inflation[[2]], '%m/%d/%Y')
+#futures[[1]] <- as.Date(futures[[1]], '%m/%d/%Y')
+oni[[2]] <- as.Date(oni[[2]], '%m/%d/%Y')
+```
+```{r}
+#Date requires full days, we need different package to handle year+month
+coffee[[1]] <- as.yearmon(coffee[[1]],'%m/%Y')
+temp[[2]] <- as.yearmon(temp[[2]], '%m/%Y')
+rain[[2]] <- as.yearmon(rain[[2]], '%m/%Y')
+fx[[1]] <- as.yearmon(fx[[1]], '%m/%Y')
+prod[[1]] <- as.yearmon(prod[[1]], '%m/%Y')
+inflation[[2]] <- as.yearmon(inflation[[2]], '%m/%Y')
+#futures[[1]] <- as.yearmon(futures[[1]], '%m/%Y')
+oni[[2]] <- as.yearmon(oni[[2]], '%m/%Y')
+```
+
+```{r}
+#Merge data (Year range 1991-2016)
+combine <- Reduce(function(x,y) merge(x,y,by=c("Date_Index"),all=TRUE), list(temp, rain, fx, prod, inflation, oni, coffee))
+```
+```{r}
+#Merge seasons
+combine$month_num <- format(combine[1], '%m')[[1]]
+combine <- merge(combine, seasons, by.x = 'month_num', by.y = 'Month', all = TRUE )
+combine <- combine[order(combine$Date_Index),]
+combine$month_num <- NULL #drop month_num
+```
+```{r}
+#Adjust for inflation, price * CPI Adjust (OldCPI/2016CPI)
+combine$Coffee_Price <- combine$Coffee_Price * combine$`CPI Adjust`
+combine <- combine[-8]
+```
+```{r}
+## Create lagged rainfall and celsisu data, the impact should be during
+weather <- combine[c('Celsius', 'Rainfall', 'ONI')]
+
+lagged_temp <- data.frame(Lag(weather$Celsius, 12))
+lagged_rain <- data.frame(Lag(weather$Rainfall, 12))
+lagged_oni <- data.frame(Lag(weather$ONI, 12))
+
+combine$lagged_temp <- lagged_temp[[1]]
+combine$lagged_rain <- lagged_rain[[1]]
+combine$lagged_oni <- lagged_oni[[1]]
+```
+```{r}
+#drop NaNs
+data <- combine[complete.cases(combine),]
+```
+```{r}
+#add back season categories for plotting
+data$Season <- toupper(names(data[10:13])[max.col(data[10:13])])
+```
+```{r}
+data
+```
+
+## Part 1: Initial Exploration
+```{r}
+#10% split
+#Jan 2007 till Dec 2015 for modelling
+#Jan 2016 till Dec 2016 for validation
+train <- data[1:84,]
+test <- data[85:96, ]
+```
+```{r}
+train$row_id <- seq.int(nrow(train))
+```
+
+```{r}
+colnames(train)
+```
+```{r}
+#Not plotting anything here, we already expect to need log differencing
+#Lets just take a look at the ACF
+
+```
+```{r}
+#Initial non-log fit
+fit <- lm(Coffee_Price ~ lagged_temp + lagged_rain + Real_USD + Production + ONI, data = train)
+
+summary(fit)
+```
+```{r}
+plot(fit)
+```
+```{r}
+std.resf <- rstandard(fit)
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf)
+```
+```{r}
+runs.test(std.resf)
+```
+```{r}
+dwtest(fit)
+```
+```{r}
+#Lets do differencing 
+#Train log
+train_log <- train
+train_log[9] <- log(train[9]) #log coffee
+colnames(train_log)[9] <- c('logCoffee_Price')
+```
+## Slow decaying ACF suggests we need to difference the data
+## We want to model price, and capture elasticity as well. Lets NOT do returns
+## Just include a lagged variable 
+```{r}
+#Create lagged variable
+lagged_coffee_price <- data.frame(Lag(train_log$logCoffee_Price, 1))
+lagged_coffee_price <- data.frame(lagged_coffee_price[-1,])
+```
+```{r}
+train_diff <- train_log
+train_diff <- train_diff[-1,] #Lose first month due to differencing
+```
+```{r}
+#Fill in the prices with their returns
+train_diff$lagged_logCoffee <- lagged_coffee_price[[1]]
+```
+```{r}
+#Create the returns, * 100 
+train_diff$CoffeeReturn <- (train_diff$logCoffee_Price - train_diff$lagged_logCoffee)*100
+train_diff$FX_Return <- train_diff$FX_Return * 100
+#train_diff$FuturesChange <- train_diff$FuturesChange * 100
+train_diff$ProdChange <- train_diff$ProdChange * 100
+```
+```{r}
+#Need to reindex after lagging and losing an observation
+train_diff$row_id <- seq.int(nrow(train_diff)) #need to reindex
+
+```
+```{r}
+## Time series plot
+ggplot(train_diff, aes(x=Date_Index, y=CoffeeReturn)) + geom_point() + ggtitle("Time Series Plot of Coffee Returns") + xlab("Time") + ylab("Coffee Returns")
+
+ggplot(train_diff, aes(x=Date_Index, y=lagged_oni)) + geom_point() + ggtitle("Time Series Plot of Lagged ONI") + xlab("Time") + ylab("12-months Lagged Oceanic Niño Index")
+```
+
+```{r}
+#Scatter plots of returns and change variables
+ggplot(train_diff, aes(x=Celsius, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of Temperature vs Coffee Return") + xlab("Temperature in Celsius") + ylab("% Coffee Return")
+
+ggplot(train_diff, aes(x=Rainfall, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of Rainfall vs Coffee Return") + xlab("Rainfall in MM") + ylab("% Coffee Return")
+
+ggplot(train_diff, aes(x=lagged_temp, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of Lagged Temperature vs Coffee Return") + xlab("12-Months Lagged Temperature in Celsius") + ylab("% Coffee Return")
+
+ggplot(train_diff, aes(x=lagged_rain, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of Lagged Rainfall vs Coffee Return") + xlab("12-Months Lagged Rainfall in MM") + ylab("% Coffee Return")
+
+ggplot(train_diff, aes(x=FX_Return, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of FX Return vs Coffee Return") + xlab("Real/USD FX Return") + ylab("% Coffee Return")
+
+ggplot(train_diff, aes(x=ProdChange, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of % Change in Production vs Coffee Return") + xlab("% Change in Production (per million) in Tons") + ylab("% Coffee Return")
+
+#ggplot(train_diff, aes(x=FuturesChange, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of % Change in Futures Price vs Coffee Return") + xlab("Change in Futures Price %") + ylab("% Coffee Return")
+
+ggplot(train_diff, aes(x=lagged_oni, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of Lagged ONI vs Coffee Return") + xlab("12-Months Lagged ONI Indicator") + ylab("% Coffee Return")
+
+ggplot(train_diff, aes(x=Season, y=CoffeeReturn)) + geom_boxplot() + ggtitle("Boxplot of Seasons vs Coffee Return") + xlab("Season") + ylab("% Coffee Return")
+
+```
+```{r}
+ggplot(train_diff, aes(x=row_id^2, y=CoffeeReturn)) + geom_point() + ggtitle("Plot of Lagged ONI vs Coffee Return") + xlab("12-Months Lagged ONI Indicator") + ylab("% Coffee Return")
+```
+
+```{r}
+diff_fit <- lm(CoffeeReturn ~ Celsius + Rainfall + lagged_temp + lagged_rain + FX_Return + ProdChange + lagged_oni
+               , data = train_diff)
+
+summary(diff_fit)
+```
+
+```{r}
+plot(diff_fit)
+```
+```{r}
+#Ordered Residual plot
+std.resf <- rstandard(diff_fit)
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+```{r}
+#pretty good here, no longer statistically significant
+#cannot reject the null, which is random
+runs.test(std.resf)
+```
+```{r}
+dwtest(diff_fit)
+```
+
+## Next we detrend and deseasonalize
+## Detrend by creating a time variable 
+```{r}
+#Including seasonal predictors 
+diff_fit2 <- lm(CoffeeReturn ~  Celsius + Rainfall + lagged_temp + lagged_rain + FX_Return + ProdChange + lagged_oni + Summer + Winter + Spring, data = train_diff)
+
+summary(diff_fit2)
+```
+```{r}
+plot(diff_fit2)
+```
+
+```{r}
+#Ordered Residual plot
+std.resf <- rstandard(diff_fit2)
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+```{r}
+runs.test(std.resf)
+```
+```{r}
+dwtest(diff_fit2)
+```
+```{r}
+#---------------------------
+## Dealing with unusual observations
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(diff_fit2)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.diff_fit2.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+train_diff[train_diff$row_id %in% c(as.numeric(rownames(tail(std_residual, 1)))),]
+```
+```{r}
+#Leverage
+#2.5*(10+1)/83 = 0.33
+hatvalues <- data.frame(hatvalues(diff_fit2))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.diff_fit2.),][2]
+hatvalues
+```
+```{r}
+train_diff[train_diff$row_id %in% c(as.numeric(rownames(tail(hatvalues, 2)))),]
+```
+```{r}
+#ignore cook's for now
+cooksd <- data.frame(cooks.distance(diff_fit2))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.diff_fit2.),][2]
+cooksd
+```
+```{r}
+plot(cooks.distance(diff_fit2))
+```
+```{r}
+train_diff[train_diff$row_id %in% c(as.numeric(rownames(tail(cooksd, 2)))),]
+```
+```{r}
+train_diff[train_diff$row_id %in% c(61),] 
+```
+```{r}
+train_diff[20]
+```
+
+```{r}
+#Imputation for outliers
+#install.packages('imputeTS')
+
+train_diff2 <- train_diff
+train_diff2[train_diff2$row_id %in% c(61),][20]  <- data.frame(c(NA))[[1]] #null out the outliers
+train_diff2[20] <- na.interpolation(train_diff2[20], option = "linear")[[1]]
+#train_diff2[train_diff2$row_id %in% c(61),] 
+
+```
+```{r}
+#After research, it seems the small regions that farm coffee are
+#Especially vulnerable to droughts
+#Adding January indicator variable
+train_diff2$Jan2010 <- replicate(83,0)
+train_diff2$Jan2010[train_diff2$row_id==12] <- 1
+```
+```{r}
+train_diff2[train_diff2$row_id %in% c(61),]
+```
+
+```{r}
+diff_fit3 <- lm(CoffeeReturn ~ Celsius + Rainfall + lagged_temp + lagged_rain + FX_Return + ProdChange + lagged_oni + Summer + Spring + Winter + Jan2010, data = train_diff2)
+
+summary(diff_fit3)
+```
+```{r}
+vif(diff_fit3)
+```
+
+```{r}
+plot(diff_fit3)
+```
+
+```{r}
+std.resf <- rstandard(diff_fit3)
+std.resf[is.na(std.resf)] <- 0
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+```{r}
+runs.test(std.resf)
+```
+```{r}
+dwtest(diff_fit3)
+```
+```{r}
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(diff_fit3)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.diff_fit3.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+train_diff2[train_diff2$row_id %in% c(as.numeric(rownames(tail(std_residual, 2)))),]
+```
+```{r}
+#Leverage
+#2.5*(13)/83 = 0.39
+hatvalues <- data.frame(hatvalues(diff_fit3))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.diff_fit3.),][2]
+hatvalues
+```
+
+```{r}
+train_diff2[train_diff2$row_id %in% c(as.numeric(rownames(tail(hatvalues, 3)))),]
+```
+
+```{r}
+train_diff3 <- train_diff2
+train_diff3[train_diff3$row_id %in% c(31),][20]  <- data.frame(c(NA))[[1]] #null out the outliers
+train_diff3[20] <- na.interpolation(train_diff3[20], option = "linear")[[1]]
+#train_diff3[train_diff3$row_id %in% c(4),] 
+
+train_diff3$Jan2012 <- replicate(83,0)
+train_diff3$Jan2012[train_diff3$row_id==36] <- 1
+
+train_diff3$Jan2011 <- replicate(83,0)
+train_diff3$Jan2011[train_diff3$row_id==24] <- 1
+```
+```{r}
+diff_fit4 <- lm(CoffeeReturn ~ Celsius + Rainfall + lagged_temp + lagged_rain + FX_Return + ProdChange + lagged_oni + Summer + Spring + Winter + Jan2010 + Jan2012 + Jan2011, data = train_diff3)
+
+summary(diff_fit4)
+```
+```{r}
+plot(diff_fit4)
+```
+```{r}
+std.resf <- rstandard(diff_fit4)
+std.resf[is.na(std.resf)] <- 0
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+```{r}
+runs.test(std.resf)
+```
+
+```{r}
+dwtest(diff_fit4)
+```
+
+```{r}
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(diff_fit4)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.diff_fit4.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+train_diff3[train_diff3$row_id %in% c(as.numeric(rownames(tail(std_residual, 4)))),]
+```
+
+```{r}
+hatvalues <- data.frame(hatvalues(diff_fit4))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.diff_fit4.),][2]
+hatvalues
+```
+```{r}
+train_diff3[train_diff3$row_id %in% c(as.numeric(rownames(tail(hatvalues, 3)))),]
+```
+```{r}
+ggplot(train_diff3, aes(x=lagged_oni, y=CoffeeReturn)) + geom_point() 
+```
+
+```{r}
+train_diff4 <- train_diff3
+train_diff4[train_diff4$row_id %in% c(63),][21]  <- data.frame(c(NA))[[1]] #null out the outliers
+train_diff4[21] <- na.interpolation(train_diff4[21], option = "linear")[[1]]
+#train_diff3[train_diff3$row_id %in% c(4),] 
+
+#train_diff3$Jan2012 <- replicate(83,0)
+#train_diff3$Jan2012[train_diff3$row_id==36] <- 1
+```
+```{r}
+diff_fit5 <- lm(CoffeeReturn ~ Celsius + Rainfall + lagged_temp + lagged_rain + FX_Return + ProdChange + BVSP + lagged_oni + Summer + Spring + Winter + Jan2010 + Jan2012 + Jan2011, data = train_diff4)
+
+summary(diff_fit5)
+```
+```{r}
+plot(diff_fit5)
+```
+```{r}
+std.resf <- rstandard(diff_fit5)
+ts.plot(ts(std.resf),ylab="Standardized residuals")
+acf(std.resf, xlim=c(1,15), ylim=c(-1,1))
+```
+```{r}
+runs.test(std.resf)
+```
+```{r}
+dwtest(diff_fit4)
+```
+```{r}
+train_diff4
+```
+
+```{r}
+### No more unusual observations
+### Lets look at plots to see if theres explanation for non-normality
+ggplot(train_diff4, aes(x=lagged_temp, y=CoffeeReturn)) + geom_point() 
+
+ggplot(train_diff4, aes(x=lagged_rain, y=CoffeeReturn)) + geom_point()
+
+ggplot(train_diff4, aes(x=log(Real_USD), y=CoffeeReturn)) + geom_point() 
+
+ggplot(train_diff4, aes(x=logProduction, y=CoffeeReturn)) + geom_point() 
+```
+
+```{r}
+write.csv(train_diff3,'./Dataset/train.csv')
+
+```
+```{r}
+test_diff
+```
+
+```{r}
+#Transform test data as well
+test_log <- test
+test_log[9] <- log(test[9]) #log coffee
+colnames(test_log)[9] <- c('logCoffee_Price')
+```
+```{r}
+#Create lagged variable
+lagged_coffee_price <- data.frame(Lag(test_log$logCoffee_Price, 1))
+lagged_coffee_price <- data.frame(lagged_coffee_price[-1,])
+```
+```{r}
+test_diff <- test_log
+test_diff <- test_diff[-1,] #Lose first month due to differencing
+```
+```{r}
+#Fill in the prices with their returns
+test_diff$lagged_logCoffee <- lagged_coffee_price[[1]]
+```
+```{r}
+#Create the returns, * 100 
+test_diff$CoffeeReturn <- (test_diff$logCoffee_Price - test_diff$lagged_logCoffee)*100
+test_diff$FX_Return <- test_diff$FX_Return * 100
+test_diff$ProdChange <- test_diff$ProdChange * 100
+```
+```{r}
+test_diff2 <- test_diff
+test_diff2$Jan2010 <- replicate(11,0)
+test_diff2$Jan2011 <- replicate(11,0)
+test_diff2$Jan2012 <- replicate(11,0)
+```
+
+```{r}
+write.csv(test_diff2,'./Dataset/test.csv')
+```
+
+```
+

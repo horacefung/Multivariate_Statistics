@@ -1,0 +1,570 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+```{r}
+ls()
+remove(list = ls())
+gc()
+```
+
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+```
+
+```{r}
+health <- read.csv("../Dataset/500_Cities__Local_Data_for_Better_Health__2018_release.csv")
+geocode <- read_excel("../Dataset/state-geocodes-v2011.xls")
+medicaid <- read_csv("../Dataset/medicaid.csv")
+```
+```{r}
+#For each datapoint, there is the city average and then ~20 census tracks
+#we will just use the average by setting GeographicalLevel == 'City'
+behaviours <- health[health$Category == 'Unhealthy Behaviors' & 
+                    health$DataValueTypeID == 'AgeAdjPrv' &
+                    health$GeographicLevel == 'City',]
+
+behaviours <- behaviours[, c('StateDesc', 'CityName', 'UniqueID', 'Measure', 'Data_Value', 'PopulationCount')]
+
+#Set cityname and uniqueid for each measure, fill in the measure with data values
+behaviours <- dcast(behaviours, StateDesc + CityName + UniqueID ~ Measure,value.var = 'Data_Value')
+```
+
+```{r}
+#For each datapoint, there is the city average and then ~20 census tracks
+#we will just use the average by setting GeographicalLevel == 'City'
+mentalhealth <- health[health$Category == 'Health Outcomes' & 
+                    health$DataValueTypeID == 'AgeAdjPrv' &
+                    health$GeographicLevel == 'City',] 
+
+mentalhealth <- mentalhealth[, c('StateDesc','CityName', 'UniqueID', 'Measure', 'Data_Value')]
+mentalhealth <- mentalhealth[mentalhealth$Measure == 'Mental health not good for >=14 days among adults aged >=18 Years',]
+
+
+#Set cityname and uniqueid for each measure, fill in the measure with data values
+mentalhealth <- dcast(mentalhealth, StateDesc + CityName + UniqueID ~ Measure,value.var = 'Data_Value')
+```
+
+```{r}
+#For each datapoint, there is the city average and then ~20 census tracks
+#we will just use the average by setting GeographicalLevel == 'City'
+prevention <- health[health$Category == 'Prevention' & 
+                    health$DataValueTypeID == 'AgeAdjPrv' &
+                    health$GeographicLevel == 'City',] 
+
+prevention <- prevention[, c('StateDesc','CityName', 'UniqueID', 'Measure', 'Data_Value')]
+prevention <- prevention[prevention$Measure == 'Current lack of health insurance among adults aged 18–64 Years' | prevention$Measure == 'Visits to doctor for routine checkup within the past Year among adults aged >=18 Years',]
+
+
+
+#Set cityname and uniqueid for each measure, fill in the measure with data values
+prevention <- dcast(prevention, StateDesc + CityName + UniqueID ~ Measure,value.var = 'Data_Value')
+
+#Rename columns
+colnames(prevention)[4:5] <- c('Health_Insurance', 'Checkup')
+```
+
+```{r}
+#Check we have 500 unique cities 
+print(nrow(mentalhealth))
+print(nrow(behaviours))
+```
+
+```{r}
+#join both features and target by unique ID
+data <- merge(behaviours, mentalhealth, by = c('UniqueID', 'CityName', 'StateDesc'))
+colnames(data)[4:9] <- c('Drinking', 'Smoking', 'Lack_of_Exercise', 'Obesity', 'Lack_of_Sleep', 'Mental_Health')
+data <- merge(data, prevention, by = c('UniqueID', 'CityName', 'StateDesc'))
+data <- merge(data, geocode[,c('State','Region')], by.x = 'StateDesc', by.y= 'State', all = TRUE)
+data <- merge(data, medicaid, by.x='StateDesc', by.y='State', all = TRUE)
+
+#Add a row id for cleaning later
+data$row_id <- seq.int(nrow(data))
+
+
+head(data)
+```
+```{r}
+
+```
+
+
+----
+## Initial Regression and Diagnostics
+----
+
+```{r}
+#Lets check the scatterplots first
+#aes is aesthetic mapping
+ggplot(data, aes(x=Drinking, y=Mental_Health)) + geom_point() + ggtitle("Plot of Binge Drinking vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data, aes(x=Smoking, y=Mental_Health)) + geom_point() + ggtitle("Plot of Smoking vs Mental Health") + xlab("% of respondents that smoke ") + ylab("% of respondents with poor mental health")
+ggplot(data, aes(x=Obesity, y=Mental_Health)) + geom_point() + ggtitle("Plot of Obesity vs Mental Health") + xlab("% of respondents that are obese") + ylab("% of respondents with poor mental health")
+ggplot(data, aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that have health insurance") + ylab("% of respondents with poor mental health")
+ggplot(data[data$Medicaid == 0,], aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("Without Medicaid: Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data[data$Medicaid == 1,], aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("With Medicaid: Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data, aes(x=Checkup, y=Mental_Health)) + geom_point() + ggtitle("Plot of Routine Checkup vs Mental Health") + xlab("% of respondents that attend routine checkup") + ylab("% of respondents with poor mental health")
+ggplot(data, aes(x=Lack_of_Sleep, y=Mental_Health)) + geom_point() + ggtitle("Plot of Sleep Deprivation vs Mental Health") + xlab("% of respondents that are sleep deprived") + ylab("% of respondents with poor mental health")
+ggplot(data, aes(x=Region, y=Mental_Health)) + geom_boxplot() + ggtitle("Boxplot of Regions vs Mental Health") + xlab("Region") + ylab("% of respondents with poor mental health")
+```
+```{r}
+ggplot(data[data$Medicaid == 0,], aes(x=Checkup, y=Mental_Health)) + geom_point() + ggtitle("Without Medicaid: Plot of Routine Checkup vs Mental Health") + xlab("% of respondents that attend routine checkup") + ylab("% of respondents with poor mental health")
+ggplot(data[data$Medicaid == 1,], aes(x=Checkup, y=Mental_Health)) + geom_point() + ggtitle("With Medicaid: Plot of Routine Checkup vs Mental Health") + xlab("% of respondents that attend routine checkup") + ylab("% of respondents with poor mental health")
+```
+
+```{r}
+#Plot histograms of each predictor, checking for non-normality (maybe long right tails)
+hist(data$Drinking, breaks=10)
+hist(data$Smoking, breaks=10)
+hist(data$Obesity, breaks=10)
+hist(data$Lack_of_Sleep, breaks=10)
+hist(data$Health_Insurance, breaks=10)
+hist(data[data$Medicaid == 0,]$Health_Insurance, breaks=10)
+hist(data[data$Medicaid == 1,]$Health_Insurance, breaks=10)
+hist(data$Checkup, breaks=10)
+hist(data[data$Medicaid == 0,]$Checkup, breaks=10)
+hist(data[data$Medicaid == 1,]$Checkup, breaks=10)
+hist(data$Mental_Health, breaks=10)
+```
+
+```{r}
+#One-hot encode
+data <- data %>% mutate(value = 1)  %>% spread(Region, value,  fill = 0 )
+
+```
+```{r}
+data <- merge(data, geocode[,c('State','Region')], by.x = 'StateDesc', by.y= 'State', all = TRUE)
+```
+```{r}
+#Remove exercise
+data <- data[-c(6)]
+head(data)
+```
+
+```{r}
+
+data <- data[, c(12, 1, 2, 3, 4, 5, 6, 7, 10, 9, 11, 13, 14, 15, 16, 17, 8)]
+
+```
+
+```{r}
+head(data)
+```
+
+```{r}
+colnames(data)[12] <- 'Midwest'
+colnames(data)[13] <- 'Northeast'
+colnames(data)[14] <- 'South'
+colnames(data)[15] <- 'West'
+```
+```{r}
+#Drop West because it is linearly dependent, if Midwest, Northeast, South =0, it is automatically
+#a West observation
+initial_fit <- lm(Mental_Health ~ Drinking + Smoking + Obesity
+                  + Lack_of_Sleep + Health_Insurance + Checkup + Midwest + Northeast + South
+                  , data = data)
+
+summary(initial_fit)
+```
+
+```{r}
+
+```
+## Step 2: Medicaid Fit
+
+```{r}
+fit1.5 <- lm(Mental_Health ~ Drinking + Smoking + Medicaid + Health_Insurance + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data)
+
+summary(fit1.5)
+```
+
+
+```{r}
+fit2 <- lm(Mental_Health ~ Drinking + Smoking + (Medicaid*Health_Insurance) + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data)
+
+summary(fit2)
+```
+Partial F-Test : ((RSSpool - RSSfull)/2)/(RSSfull/(n-4))
+
+= ((0.7172 - 0.7139)/2)/((0.7139/(500-4)) = 1.1463790447
+
+```{r}
+predict(fit2, newdata=data[343,], se.fit = TRUE, interval = "confidence", level = 0.95)
+```
+```{r}
+predict(fit2, newdata=data[343,], se.fit = TRUE, interval = "prediction", level = 0.95)
+```
+
+```{r}
+anova= anova(fit1.5, fit2)
+anova
+```
+
+```{r}
+plot(fit2)
+```
+
+```{r}
+residualvsfitted = data.frame(fitted(fit2), residuals(fit2))
+
+hist(residualvsfitted$residuals.fit2., main='Histogram of residuals',
+     xlab = 'Residuals')
+```
+
+```{r}
+```
+## Step 3: Examining outliers and influential points
+```{r}
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(fit2)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit2.),][2]
+std_residual
+```
+```{r}
+#Get observations
+data[c(rownames(tail(std_residual, 11))),]
+```
+
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(11+1)/500 which is hi > 0.06 right now
+hatvalues <- data.frame(hatvalues(fit2))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit2.),][2]
+hatvalues
+```
+
+```{r}
+data[c(rownames(tail(hatvalues, 11))),]
+```
+
+```{r}
+plot(cooks.distance(fit2))
+```
+
+```{r}
+cooksd <- data.frame(cooks.distance(fit2))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit2.),][2]
+cooksd
+```
+```{r}
+#Although they are all small, some observations jump from the next biggest one 
+data[c(rownames(tail(cooksd, 4))),]
+```
+
+```{r}
+##Removing outliers and influential points
+data2 <- data[!data$row_id %in% c(as.numeric(rownames(tail(std_residual, 11)))),]
+data2 <- data2[!data2$row_id %in% c(as.numeric(rownames(tail(hatvalues, 11)))),]
+data2 <- data2[!data2$row_id %in% c(as.numeric(rownames(tail(cooksd, 4)))),]
+data2$row_id <- seq.int(nrow(data2)) #need to reindex
+
+data2
+```
+```{r}
+ggplot(data2, aes(x=Drinking, y=Mental_Health)) + geom_point() + ggtitle("Plot of Binge Drinking vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data2, aes(x=Smoking, y=Mental_Health)) + geom_point() + ggtitle("Plot of Smoking vs Mental Health") + xlab("% of respondents that smoke ") + ylab("% of respondents with poor mental health")
+ggplot(data2, aes(x=Obesity, y=Mental_Health)) + geom_point() + ggtitle("Plot of Obesity vs Mental Health") + xlab("% of respondents that are obese") + ylab("% of respondents with poor mental health")
+ggplot(data2, aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that have health insurance") + ylab("% of respondents with poor mental health")
+ggplot(data2[data2$Medicaid == 0,], aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("Without Medicaid: Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data2[data2$Medicaid == 1,], aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("With Medicaid: Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data2, aes(x=Checkup, y=Mental_Health)) + geom_point() + ggtitle("Plot of Routine Checkup vs Mental Health") + xlab("% of respondents that attend routine checkup") + ylab("% of respondents with poor mental health")
+ggplot(data2, aes(x=Lack_of_Sleep, y=Mental_Health)) + geom_point() + ggtitle("Plot of Sleep Deprivation vs Mental Health") + xlab("% of respondents that are sleep deprived") + ylab("% of respondents with poor mental health")
+ggplot(data2, aes(x=Region, y=Mental_Health)) + geom_boxplot() + ggtitle("Boxplot of Regions vs Mental Health") + xlab("Region") + ylab("% of respondents with poor mental health")
+```
+
+```{r}
+## Third regression after removing outliers and influential points
+fit3 <- lm(Mental_Health ~ Drinking + Smoking + (Medicaid*Health_Insurance) + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data2)
+
+summary(fit3)
+```
+```{r}
+plot(fit3)
+```
+
+```{r}
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(fit3)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit3.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+
+```{r}
+#Get observations
+data2[data2$row_id %in% c(as.numeric(rownames(tail(std_residual, 7)))),]
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(12)/480 which is hi > 0.0625 right now
+hatvalues <- data.frame(hatvalues(fit3))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit3.),][2]
+hatvalues
+```
+```{r}
+data2[data2$row_id %in% c(as.numeric(rownames(tail(hatvalues, 7)))),]
+
+```
+```{r}
+#All the Cook's D are small enough
+cooksd <- data.frame(cooks.distance(fit3))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit3.),]
+cooksd
+```
+
+```{r}
+plot(cooksd)
+```
+
+```{r}
+data3 <- data2[!data2$row_id %in% c(as.numeric(rownames(tail(std_residual, 7)))),]
+data3 <- data3[!data3$row_id %in% c(as.numeric(rownames(tail(hatvalues, 7)))),]
+
+data3$row_id <- seq.int(nrow(data3)) #need to reindex
+
+nrow(data3)
+```
+```{r}
+## Third regression after removing outliers and influential points
+fit4 <- lm(Mental_Health ~ Drinking + Smoking + (Medicaid*Health_Insurance) + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data3)
+
+summary(fit4)
+```
+```{r}
+plot(fit4)
+```
+
+```{r}
+#Standardized residuals
+#We're looking at |e| > 2.5
+std_residual <- data.frame(abs(rstandard(fit4)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit4.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+#Get observations
+data3[data3$row_id %in% c(as.numeric(rownames(tail(std_residual, 4)))),]
+```
+```{r}
+#Leverage Points
+#We're looking at hi > 2.5(12)/466 which is hi > 0.064 right now
+hatvalues <- data.frame(hatvalues(fit4))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit4.),][2]
+hatvalues
+```
+
+```{r}
+#Get observations
+data3[data3$row_id %in% c(as.numeric(rownames(tail(hatvalues, 2)))),]
+```
+
+```{r}
+cooksd <- data.frame(cooks.distance(fit4))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit4.),]
+plot(cooksd)
+```
+```{r}
+data4 <- data3[!data3$row_id %in% c(as.numeric(rownames(tail(std_residual, 4)))),]
+data4 <- data4[!data4$row_id %in% c(as.numeric(rownames(tail(hatvalues, 2)))),]
+
+data4$row_id <- seq.int(nrow(data4)) #need to reindex
+
+nrow(data4)
+```
+```{r}
+## Fourth regression after removing outliers and influential points
+fit5 <- lm(Mental_Health ~ Drinking + Smoking + (Medicaid*Health_Insurance) + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data4)
+
+summary(fit5)
+```
+```{r}
+plot(fit5)
+```
+
+```{r}
+std_residual <- data.frame(abs(rstandard(fit5)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit5.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+
+
+```{r}
+#Get observations
+data4[data4$row_id %in% c(as.numeric(rownames(tail(std_residual, 5)))),]
+```
+
+```{r}
+#2.5*(12)/460 = 0.065
+hatvalues <- data.frame(hatvalues(fit5))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit5.),][2]
+hatvalues
+```
+```{r}
+#Get observations
+#data4[data4$row_id %in% c(as.numeric(rownames(tail(hatvalues, 3)))),]
+```
+```{r}
+data5 <- data4[!data4$row_id %in% c(as.numeric(rownames(tail(std_residual, 5)))),]
+
+data5$row_id <- seq.int(nrow(data5)) #need to reindex
+
+nrow(data5)
+```
+```{r}
+fit6 <- lm(Mental_Health ~ Drinking + Smoking + (Medicaid*Health_Insurance) + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data5)
+
+summary(fit6)
+```
+```{r}
+plot(fit6)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(fit6)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit6.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+data5[data5$row_id %in% c(as.numeric(rownames(tail(std_residual, 3)))),]
+```
+```{r}
+#2.5*(12)/455 = 0.066
+hatvalues <- data.frame(hatvalues(fit6))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit6.),][2]
+hatvalues
+```
+```{r}
+data5[data5$row_id %in% c(as.numeric(rownames(tail(hatvalues, 1)))),]
+```
+```{r}
+plot(cooks.distance(fit6))
+```
+
+```{r}
+data6 <- data5[!data5$row_id %in% c(as.numeric(rownames(tail(std_residual, 3)))),]
+data6 <- data6[!data6$row_id %in% c(as.numeric(rownames(tail(hatvalues, 1)))),]
+
+data6$row_id <- seq.int(nrow(data6)) #need to reindex
+
+nrow(data6)
+```
+```{r}
+fit7 <- lm(Mental_Health ~ Drinking + Smoking + (Medicaid*Health_Insurance) + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data6)
+
+summary(fit7)
+```
+```{r}
+plot(fit7)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(fit7)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit7.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+data6[data6$row_id %in% c(as.numeric(rownames(tail(std_residual, 3)))),]
+```
+
+```{r}
+plot(cooks.distance(fit7))
+```
+
+```{r}
+data7 <- data6[!data6$row_id %in% c(as.numeric(rownames(tail(std_residual, 3)))),]
+
+data7$row_id <- seq.int(nrow(data7)) #need to reindex
+
+nrow(data7)
+```
+```{r}
+predict(fit7, newdata=data7[316,], se.fit = TRUE, interval = "confidence", level = 0.95)
+
+```
+```{r}
+predict(fit7, newdata=data7[316,], se.fit = TRUE, interval = "prediction", level = 0.95)
+
+```
+
+```{r}
+fit8 <- lm(Mental_Health ~ Drinking + Smoking + (Medicaid*Health_Insurance) + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South
+                  , data = data7)
+
+summary(fit8)
+```
+```{r}
+plot(fit8)
+```
+```{r}
+ggplot(data7, aes(x=Drinking, y=Mental_Health)) + geom_point() + ggtitle("Plot of Binge Drinking vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data7, aes(x=Smoking, y=Mental_Health)) + geom_point() + ggtitle("Plot of Smoking vs Mental Health") + xlab("% of respondents that smoke ") + ylab("% of respondents with poor mental health")
+ggplot(data7, aes(x=Obesity, y=Mental_Health)) + geom_point() + ggtitle("Plot of Obesity vs Mental Health") + xlab("% of respondents that are obese") + ylab("% of respondents with poor mental health")
+#ggplot(data2, aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that have health insurance") + ylab("% of respondents with poor mental health")
+ggplot(data7[data7$Medicaid == 0,], aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("Without Medicaid: Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data7[data7$Medicaid == 1,], aes(x=Health_Insurance, y=Mental_Health)) + geom_point() + ggtitle("With Medicaid: Plot of Health Insurance Coverage vs Mental Health") + xlab("% of respondents that binge drink ") + ylab("% of respondents with poor mental health")
+ggplot(data7, aes(x=Checkup, y=Mental_Health)) + geom_point() + ggtitle("Plot of Routine Checkup vs Mental Health") + xlab("% of respondents that attend routine checkup") + ylab("% of respondents with poor mental health")
+ggplot(data7, aes(x=Lack_of_Sleep, y=Mental_Health)) + geom_point() + ggtitle("Plot of Sleep Deprivation vs Mental Health") + xlab("% of respondents that are sleep deprived") + ylab("% of respondents with poor mental health")
+ggplot(data7, aes(x=Region, y=Mental_Health)) + geom_boxplot() + ggtitle("Boxplot of Regions vs Mental Health") + xlab("Region") + ylab("% of respondents with poor mental health")
+```
+```{r}
+hist(data7$Drinking, breaks=10)
+hist(data7$Smoking, breaks=10)
+hist(data7$Obesity, breaks=10)
+hist(data7$Lack_of_Sleep, breaks=10)
+hist(data7$Health_Insurance, breaks=10)
+hist(data7[data7$Medicaid == 0,]$Health_Insurance, breaks=10)
+hist(data7[data7$Medicaid == 1,]$Health_Insurance, breaks=10)
+hist(data7$Checkup, breaks=10)
+hist(data7[data7$Medicaid == 0,]$Checkup, breaks=10)
+hist(data7[data7$Medicaid == 1,]$Checkup, breaks=10)
+hist(data7$Mental_Health, breaks=10)
+```
+
+```{r}
+#Data4 is good enough now
+write.csv(data7,'./Dataset/500_Cities_11P_Cleaned.csv')
+```
+```{r}
+write.csv(data, './Dataset/500_Cities_Full_Merged.csv')
+```
+

@@ -1,0 +1,437 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+ls()
+remove(list = ls())
+gc()
+```
+
+
+```{r}
+library(reshape2)
+library(car)
+library(readxl)
+library(ggplot2)
+library(tidyverse)
+library(leaps)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+```{r}
+data <- read.csv("./Dataset/500_Cities_11P_Cleaned.csv")
+data <- data[complete.cases(data), ]
+```
+```{r}
+full_data <- read.csv("./Dataset/500_Cities_Full_Merged.csv")
+```
+
+```{r}
+data$Medi_Health <- data$Medicaid * data$Health_Insurance
+```
+```{r}
+full_data$Medi_Health <- full_data$Medicaid * full_data$Health_Insurance
+```
+
+```{r}
+fit <- lm(Mental_Health ~ Drinking + Smoking + Medicaid + Health_Insurance + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South + Medi_Health
+                  , data = data)
+
+summary(fit)
+```
+
+```{r}
+plot(fit)
+```
+
+
+## Model Selection:
+
+```{r}
+vif(fit)
+```
+```{r}
+cor(data[c('Drinking', 'Smoking', 'Obesity', 'Lack_of_Sleep','Health_Insurance', 'Checkup')], method='pearson')
+```
+
+```{r}
+regsubsets.out <-
+    regsubsets(Mental_Health ~ Smoking + Medicaid + Health_Insurance + Obesity
+                  + Lack_of_Sleep + Checkup + Midwest + Northeast + South + Medi_Health,
+                  data = data,
+                  nbest = 2,       # 1 best model for each number of predictors
+                  nvmax = NULL,    # NULL for no limit on number of variables
+                  force.in = NULL, force.out = NULL,
+                  method = "exhaustive")
+regsubsets.out
+```
+```{r}
+summary.out <- summary(regsubsets.out)
+subsets <- as.data.frame(summary.out$outmat)
+subsets
+```
+
+```{r}
+best_metrics <- cbind(data.frame(summary.out$rsq), data.frame(summary.out$adjr2),
+                      data.frame(summary.out$cp), data.frame(summary.out$rss))
+
+colnames(best_metrics)[1] <- 'R_Sq'
+colnames(best_metrics)[2] <- 'R_Sq_Adj'
+colnames(best_metrics)[3] <- 'Mallows_Cp'
+colnames(best_metrics)[4] <- 'RSS'
+
+```
+
+```{r}
+subset_table <- cbind(best_metrics, subsets)
+subset_table$Model <- seq.int(nrow(subset_table))
+subset_table$Predictors <- c(1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9,10)
+#subset_table <- subset_table[ , c(15, 16, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)]
+subset_table <- transform(subset_table, RMS = RSS / (448-Predictors-1))
+
+subset_table
+```
+
+Cp: Based on p+1 approximation rule, the range is 8-10 predictors
+R_sq_adj: Looking at where R_sq level's off at model 11-15, which is 6-8 predictors
+
+
+```{r}
+## Get MCp using 10 predictor model RMS = s^2
+subset_table <- transform(subset_table, MCp = Mallows_Cp + (Predictors-11-2)*(RMS)/(134.5080))
+```
+```{r}
+head(subset_table)
+```
+
+```{r}
+#Lets deal with modified Mcp later
+subset_table$AIC <- c(AIC(lm(Mental_Health ~ Smoking, data = data)), #1
+  AIC(lm(Mental_Health ~ Obesity, data = data)), #2
+  AIC(lm(Mental_Health ~ Smoking + Midwest, data = data)), #3
+  AIC(lm(Mental_Health ~ Smoking + Medi_Health, data = data)), #4
+  AIC(lm(Mental_Health ~ Smoking + Midwest + Medi_Health, data = data)), #5
+  AIC(lm(Mental_Health ~ Smoking + Midwest + South, data = data)), #6
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Midwest + South, data = data)), #7
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Midwest + Medi_Health, data = data)), #8
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + South, data = data)), #9
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Midwest + Northeast + South, data = data)), #10
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + Northeast + South, data = data)), #11
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Checkup + Midwest + Northeast + South, data = data)),#12
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Obesity + Lack_of_Sleep + Midwest + Northeast + South, data = data)), #13
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Obesity + Checkup + Midwest + Northeast + South, data = data)), #14
+  AIC(lm(Mental_Health ~ Smoking + Medicaid + Health_Insurance + Lack_of_Sleep + Midwest + Northeast + South + Medi_Health, data = data)), #15
+  AIC(lm(Mental_Health ~ Smoking + Health_Insurance + Obesity + Lack_of_Sleep + Checkup + Midwest + Northeast + South, data = data)), #16
+  AIC(lm(Mental_Health ~ Smoking + Medicaid + Health_Insurance + Obesity + Checkup + Midwest + Northeast + South + Medi_Health, data = data)), #17
+  AIC(lm(Mental_Health ~ Smoking + Medicaid + Health_Insurance + Obesity + Lack_of_Sleep + Midwest + Northeast + South + Medi_Health, data = data)), #18
+  AIC(lm(Mental_Health ~ Smoking + Medicaid + Health_Insurance + Obesity + Lack_of_Sleep + Checkup + Midwest + Northeast + South + Medi_Health, data = data)))  #19
+
+
+```
+```{r}
+subset_table <- transform(subset_table, AICc = AIC + (2*(Predictors+2)*(Predictors+3)/(448-Predictors-3)))
+
+
+subset_table <- subset_table[ , c(15,16,1,2,3,18,4,17,19,20,5,6,7,8,9,10,11,12,13,14)]
+```
+```{r}
+subset_table
+```
+```{r}
+ggplot(data=subset_table, aes(x=Model, y=R_Sq_Adj)) + geom_point() + ggtitle('Adjusted R^2  versus Model Index')
+ggplot(data=subset_table, aes(x=Model, y=MCp)) + geom_point() + geom_line(aes(Model, Predictors+1)) + ggtitle('MCp versus Model Index')
+ggplot(data=subset_table, aes(x=Model, y=AICc)) + geom_point()+ ggtitle('AICc versus Model Index')
+```
+## Rsq Adj: Tapers off around model 11-13 
+## Mcp: Flattens around 13-15
+## AICc: Flattens around 14-15
+## Lets try model 11-15, which is 6-8 preditors. 
+## Lets do model 11, 13, 15 
+
+
+```{r}
+pred_5 <- lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + South, data =
+               data)
+
+summary(pred_5)
+```
+```{r}
+plot(pred_5)
+```
+
+```{r}
+vif(pred_5)
+```
+```{r}
+##NYC
+predict(pred5, newdata=full4[316,], se.fit = TRUE, interval = "confidence", level = 0.95)
+```
+```{r}
+predict(pred5, newdata=full4[316,], se.fit = TRUE, interval = "prediction", level = 0.95)
+```
+```{r}
+## This is bad practice, but i will remove some unuusal observations, and not redo best subset
+
+```
+
+```{r}
+
+
+#Model 11, 6 predictors:
+pred_6 <- lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + Northeast + South, data =
+               data)
+
+summary(pred_6)
+
+```
+```{r}
+```
+
+```{r}
+plot(pred_6)
+```
+```{r}
+vif(pred_6)
+```
+```{r}
+cor(data[c('Smoking', 'Health_Insurance', 'Lack_of_Sleep','Midwest', 'Northeast', 'South')], method='pearson')
+```
+```{r}
+
+```
+
+```{r}
+pred_7 <- lm(Mental_Health ~ Smoking + Health_Insurance + Obesity + Lack_of_Sleep + Midwest + Northeast + South, data = data)
+
+aov_7 <- aov(Mental_Health ~ Smoking + Health_Insurance + Obesity + Lack_of_Sleep + Midwest + Northeast + South, data = data)
+
+summary(pred_7)
+#summary(aov_7)
+```
+```{r}
+vif(pred_7)
+```
+```{r}
+cor(data[c('Smoking', 'Health_Insurance', 'Obesity', 'Lack_of_Sleep','Midwest', 'Northeast', 'South')], method='pearson')
+```
+
+```{r}
+plot(pred_7)
+```
+```{r}
+pred_8 <-lm(Mental_Health ~ Smoking + Medicaid + Health_Insurance + Lack_of_Sleep + Midwest + Northeast + South + Medi_Health, data = data)
+
+summary(pred_8)
+#Anova(pred_8)
+```
+
+```{r}
+vif(pred_8)
+```
+```{r}
+cor(data[c('Smoking', 'Medicaid','Health_Insurance', 'Lack_of_Sleep','Midwest', 'Northeast', 'South', 'Medi_Health')], method='pearson')
+```
+
+```{r}
+plot(pred_8)
+```
+
+## We select the 6 predictor models
+## Can we test for constant shift vs full model 
+## Not really, doesn't make sense to multiple the two, we have no theory that there exist an interaction
+
+## Run final model against full data set
+
+# **I can do this but not really necessary, the plot(fit) looks good
+```{r}
+full_fit <-lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + South, data = full_data)
+
+summary(full_fit)
+```
+```{r}
+plot(full_fit)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(pred_5)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.pred_5.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+full_data[full_data$row_id %in% c(as.numeric(rownames(tail(std_residual, 2)))),]
+```
+```{r}
+#2.5*(6)/448 = 0.033
+hatvalues <- data.frame(hatvalues(pred_5))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.pred_5.),][2]
+hatvalues
+```
+```{r}
+full_data[full_data$row_id %in% c(as.numeric(rownames(tail(hatvalues, 4)))),]
+```
+```{r}
+cooksd <- data.frame(cooks.distance(pred_5))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.pred_5.),]
+plot(cooksd)
+```
+```{r}
+cooksd
+```
+
+```{r}
+full_data[full_data$row_id %in% c(as.numeric(rownames(tail(cooksd, 1)))),]
+```
+```{r}
+full2 <- data[!data$row_id %in% c(as.numeric(rownames(tail(std_residual, 2)))),]
+full2 <- full2[!full2$row_id %in% c(as.numeric(rownames(tail(hatvalues, 4)))),]
+#full2 <- full2[!full2$row_id %in% c(as.numeric(rownames(tail(cooksd, 1)))),]
+
+full2$row_id <- seq.int(nrow(full2)) #need to reindex
+
+nrow(full2)
+```
+
+```{r}
+fit2 <-lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + South, data = full2)
+
+summary(fit2)
+```
+```{r}
+plot(fit2)
+```
+```{r}
+std_residual <- data.frame(abs(rstandard(fit2)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit2.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+full2[full2$row_id %in% c(as.numeric(rownames(tail(std_residual, 6)))),]
+```
+```{r}
+#2.5*(6)/478 = 0.03
+hatvalues <- data.frame(hatvalues(fit2))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit2.),][2]
+hatvalues
+```
+```{r}
+full2[full2$row_id %in% c(as.numeric(rownames(tail(hatvalues, 1)))),]
+```
+```{r}
+cooksd <- data.frame(cooks.distance(fit2))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit2.),]
+plot(cooksd)
+```
+```{r}
+cooksd
+```
+
+```{r}
+#full3 <- full2[!full2$row_id %in% c(as.numeric(rownames(tail(std_residual, )))),]
+full3 <- full2[!full2$row_id %in% c(as.numeric(rownames(tail(hatvalues, 2)))),]
+
+full3$row_id <- seq.int(nrow(full3)) #need to reindex
+
+nrow(full3)
+```
+```{r}
+fit3 <-lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + South, data = full3)
+
+summary(fit3)
+```
+```{r}
+plot(fit3)
+```
+```{r}
+cooksd <- data.frame(cooks.distance(fit3))
+cooksd <- tibble::rowid_to_column(cooksd, "ID")
+cooksd <- cooksd[order(cooksd$cooks.distance.fit3.),]
+#plot(cooksd)
+cooksd
+```
+
+```{r}
+std_residual <- data.frame(abs(rstandard(fit3)))
+std_residual <- tibble::rowid_to_column(std_residual, "ID")
+std_residual <- std_residual[order(std_residual$abs.rstandard.fit3.),][2]
+std_residual #can double check, obs 252 here == 258 in data2
+```
+```{r}
+full3[full3$row_id %in% c(as.numeric(rownames(tail(std_residual, 3)))),]
+```
+
+```{r}
+#2.5*(6)/467 = 0.032
+hatvalues <- data.frame(hatvalues(fit3))
+hatvalues <- tibble::rowid_to_column(hatvalues, "ID")
+hatvalues <- hatvalues[order(hatvalues$hatvalues.fit3.),][2]
+hatvalues
+```
+```{r}
+full3[full3$row_id %in% c(as.numeric(rownames(tail(hatvalues, 0)))),]
+```
+
+```{r}
+full4 <- full3[!full3$row_id %in% c(as.numeric(rownames(tail(std_residual, 3)))),]
+
+full4$row_id <- seq.int(nrow(full4)) #need to reindex
+
+nrow(full4)
+```
+
+```{r}
+fit4 <-lm(Mental_Health ~ Smoking + Health_Insurance + Lack_of_Sleep + Midwest + South, data = full4)
+
+summary(fit4)
+```
+```{r}
+plot(fit4)
+```
+
+```{r}
+residualvsfitted = data.frame(fitted(fit4), residuals(fit4))
+
+hist(residualvsfitted$residuals.fit4., main='Histogram of residuals',
+     xlab = 'Residuals')
+```
+```{r}
+
+vif(fit4)
+```
+```{r}
+cor(data[c('Smoking','Health_Insurance','Lack_of_Sleep','Midwest', 'South', 'Medi_Health')], method='pearson')
+```
+
+```{r}
+predict(fit2, newdata=full4[323,], se.fit = TRUE, interval = "confidence", level = 0.95)
+```
+```{r}
+predict(fit2, newdata=full4[323,], se.fit = TRUE, interval = "prediction", level = 0.95)
+```
+
+```{r}
+## One more partial f-test
+
+constant_shift <-lm(Mental_Health ~ Smoking + Medicaid + Health_Insurance + Lack_of_Sleep + Midwest + Northeast + South, data = full4)
+
+summary(constant_shift)
+```
+
+```{r}
+anova= anova(constant_shift, fit4)
+anova
+```
+
